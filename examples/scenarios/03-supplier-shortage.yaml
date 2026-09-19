@@ -1,0 +1,7 @@
+id: supplier-shortage
+question: Why did outdoor-product revenue fall sharply in northern Italy during July?
+root_cause: {category: supplier_inventory_shortage}
+expected_findings: [inventory_leads_sales, affected_product_ids, supplier_s17]
+expected_datasource_route: [analytics, catalog, analytics]
+expected_external_agents: [news_event]
+forbidden_conclusions: [regional_demand_decline]

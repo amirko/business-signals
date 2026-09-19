@@ -1,0 +1,6 @@
+id: duplicate-ingestion
+question: Why did reported revenue spike on April 4?
+root_cause: {category: duplicate_event_ingestion}
+expected_findings: [duplicate_event_ids, ingestion_window]
+expected_external_agents: []
+forbidden_conclusions: [demand_spike, news_event]

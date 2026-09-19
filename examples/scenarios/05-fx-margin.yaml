@@ -1,0 +1,6 @@
+id: fx-margin
+question: Why did imported electronics margin contract during September?
+root_cause: {category: fx_cost_increase}
+expected_findings: [units_stable, selling_price_stable, supplier_base_price_stable, local_cost_increase]
+expected_external_agents: [economy_fx]
+forbidden_conclusions: [demand_decline]

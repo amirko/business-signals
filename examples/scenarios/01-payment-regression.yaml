@@ -1,0 +1,6 @@
+id: payment-regression
+question: Why did conversion fall after March 18?
+root_cause: {category: payment_regression}
+expected_findings: [ios, payment_failures, release_4_17]
+expected_external_agents: []
+forbidden_conclusions: [weather, regional_demand]

@@ -1,0 +1,6 @@
+id: storm-negative-control
+question: Why did mobile conversion fall during the regional storm?
+root_cause: {category: payment_regression}
+expected_findings: [ios, payment_failures, release_4_17]
+expected_external_agents: []
+forbidden_conclusions: [weather_disruption, storm_caused_conversion_drop]

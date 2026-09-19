@@ -1,0 +1,7 @@
+id: weather-disruption
+question: Why did physical-store sales fall in Dubai in mid-April 2024 while online sales held steady?
+root_cause: {category: weather_disruption}
+expected_findings: [regional_store_decline, traffic_decline, online_stable]
+expected_external_agents: [weather]
+expected_external_event: [Dubai flooding, April 2024]
+forbidden_conclusions: [software_regression]

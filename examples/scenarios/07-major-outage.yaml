@@ -1,0 +1,7 @@
+id: major-technology-outage
+question: Why did travel-partner transactions fail globally on July 19, 2024?
+root_cause: {category: upstream_technology_outage}
+expected_findings: [transaction_failures, partner_concentration, exact_time_window]
+expected_external_agents: [news_event]
+expected_external_event: [CrowdStrike outage, July 19 2024]
+forbidden_conclusions: [weather, demand_decline]

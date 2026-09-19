@@ -1,0 +1,36 @@
+services:
+  catalog:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: investigator
+      POSTGRES_PASSWORD: investigator
+    ports: ["5433:5432"]
+    volumes:
+      - catalog-data:/var/lib/postgresql/data
+      - ./examples/generators/catalog.sql:/docker-entrypoint-initdb.d/10-catalog.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investigator -d catalog"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  analytics:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: investigator
+      POSTGRES_PASSWORD: investigator
+    ports: ["5434:5432"]
+    volumes:
+      - analytics-data:/var/lib/postgresql/data
+      - ./examples/generators/analytics.sql:/docker-entrypoint-initdb.d/10-analytics.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investigator -d analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  catalog-data:
+  analytics-data:
