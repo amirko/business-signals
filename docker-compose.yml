@@ -9,6 +9,7 @@ services:
     volumes:
       - catalog-data:/var/lib/postgresql/data
       - ./examples/generators/catalog.sql:/docker-entrypoint-initdb.d/10-catalog.sql:ro
+      - ./examples/data:/data:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U investigator -d catalog"]
       interval: 5s
@@ -25,6 +26,7 @@ services:
     volumes:
       - analytics-data:/var/lib/postgresql/data
       - ./examples/generators/analytics.sql:/docker-entrypoint-initdb.d/10-analytics.sql:ro
+      - ./examples/data:/data:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U investigator -d analytics"]
       interval: 5s

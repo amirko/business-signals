@@ -48,6 +48,7 @@ apps/
   web/                 React/TypeScript investigation workbench
 docs/                  Architecture and evaluation notes
 examples/
+  data/                Versioned CSV fixtures loaded into the demo databases
   generators/          Deterministic PostgreSQL and TimescaleDB fixtures
   scenarios/           Ground-truth benchmark definitions and negative controls
   evaluate.py          Scenario result scorer
@@ -67,6 +68,8 @@ pip install -e '.[dev]'
 npm --prefix apps/web install
 docker compose up -d --wait
 ```
+
+The database initialization scripts create schema and load the checked-in CSV fixtures under `examples/data/`. Those files hold internal business records only; weather, FX, and historic-event data remains an external-research concern.
 
 Start the API and web app in separate terminals:
 

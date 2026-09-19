@@ -1,0 +1,9 @@
+id,name,category_id,supplier_id,supplier_unit_cost
+P001,Trail backpack 28L,C01,S17,42.00
+P002,Alpine shell jacket,C01,S17,68.00
+P003,Carbon trekking poles,C01,S17,51.00
+P004,Day-hike bottle,C01,S04,12.00
+P005,Home lantern,C02,S04,24.00
+P006,Imported action camera,C03,S09,92.00
+P007,Imported GPS watch,C03,S09,118.00
+P008,Travel packing cubes,C02,S04,18.00
