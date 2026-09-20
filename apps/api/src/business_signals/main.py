@@ -23,9 +23,10 @@ app = FastAPI(
     version="0.1.0",
     description="Evidence-backed, multi-datasource root-cause investigations.",
 )
+local_web_origins = sorted({settings.web_origin, "http://localhost:3000", "http://localhost:5173"})
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.web_origin],
+    allow_origins=local_web_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],

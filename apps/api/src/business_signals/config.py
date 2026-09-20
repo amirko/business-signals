@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5-mini"
     query_timeout_seconds: int = 15
     max_query_rows: int = 500
-    web_origin: str = "http://localhost:5173"
+    web_origin: str = "http://localhost:3000"
 
 
 settings = Settings()

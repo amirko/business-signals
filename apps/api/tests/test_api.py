@@ -9,6 +9,11 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_local_web_app_is_allowed_by_cors() -> None:
+    response = TestClient(app).get("/api/datasources", headers={"Origin": "http://localhost:3000"})
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def test_openapi_exposes_investigation_surface() -> None:
     schema = TestClient(app).get("/openapi.json").json()
     paths = schema["paths"]
