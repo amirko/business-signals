@@ -306,14 +306,16 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
       )}
       {notice && <output className="notice">{notice}</output>}
       <div className="source-list">
-        {sources.length === 0 && !notice && <div className="empty-sources"><Database /><strong>No datasources connected</strong><span>Add a connection, then explicitly discover its schema.</span></div>}
+        {sources.length === 0 && !notice && <div className="empty-sources"><Database /><strong>No datasources connected</strong><span> Add a connection, then explicitly discover its schema.</span></div>}
         {sources.map((source) => (
           <article className="source-row" key={source.id}>
-            <span className="source-icon"><Database /></span>
-            <div className="source-info"><div><h2>{source.name}</h2><Badge variant="outline">{source.type}</Badge></div><p>{source.schema_cached ? `${source.table_count} tables discovered` : 'Schema not loaded'}</p></div>
-            <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
-            <Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button>
-            {consoleLines[source.id] && <div className="schema-console" aria-live="polite">{consoleLines[source.id].map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
+            <div className="source-summary">
+              <span className="source-icon"><Database /></span>
+              <div className="source-info"><div><h2>{source.name}</h2><Badge variant="outline">{source.type}</Badge></div><p>{source.schema_cached ? `${source.table_count} tables discovered` : 'Schema not loaded'}</p></div>
+              <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
+              <Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button>
+            </div>
+            {consoleLines[source.id] && <div className="schema-console" role="log" aria-live="polite">{consoleLines[source.id].map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
             {metadata[source.id] && <div className="schema-table-list"><span>Detected schema — select a table for details</span>{metadata[source.id].structural_metadata.map((table) => <button key={`${table.schema_name}.${table.name}`} onClick={() => setSelectedTable(table)}><Database /><code>{table.schema_name}.{table.name}</code><small>{table.columns.length} columns{table.approximate_rows !== null ? ` · ~${table.approximate_rows.toLocaleString()} rows` : ''}</small><ChevronRight /></button>)}</div>}
           </article>
         ))}
