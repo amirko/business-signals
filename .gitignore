@@ -1,6 +1,8 @@
 .DS_Store
 .env
+.business-signals/
 .venv/
+.venv*/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

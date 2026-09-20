@@ -28,7 +28,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=local_web_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -66,6 +66,17 @@ async def list_datasources() -> list[DatasourceSummary]:
     return registry.list()
 
 
+@app.get("/api/datasources/{datasource_id}/metadata", response_model=DatasourceMetadata)
+async def get_cached_metadata(datasource_id: str) -> DatasourceMetadata:
+    try:
+        metadata = registry.cached_metadata(datasource_id)
+        if metadata is None:
+            raise HTTPException(status_code=404, detail="No cached schema is available for this datasource")
+        return metadata
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/datasources/{datasource_id}/refresh", response_model=DatasourceMetadata)
 async def refresh_datasource(datasource_id: str) -> DatasourceMetadata:
     try:
@@ -74,6 +85,14 @@ async def refresh_datasource(datasource_id: str) -> DatasourceMetadata:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Schema refresh failed: {exc}") from exc
+
+
+@app.delete("/api/datasources/{datasource_id}", status_code=204)
+async def delete_datasource(datasource_id: str) -> None:
+    try:
+        await registry.delete(datasource_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/investigations", response_model=InvestigationState, status_code=202)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
 
@@ -12,12 +13,17 @@ from business_signals.models import Evidence, FinalAnalysis, Hypothesis, Investi
 
 T = TypeVar("T", bound=BaseModel)
 
+# Uvicorn configures this logger at INFO level, so these records appear in the
+# terminal when the API is started with `make api`.
+logger = logging.getLogger("uvicorn.error")
+
 
 SYSTEM_PROMPT = """You are the planning component of a business root-cause investigation engine.
 Use only supplied metadata and evidence. Never fabricate schema, values, or business semantics.
 Keep competing hypotheses alive. Correlation is not causation. Prefer investigations with high
 information gain. SQL must be one read-only PostgreSQL SELECT and must use only supplied schema.
-Return valid JSON matching the requested schema, without markdown or private chain-of-thought."""
+Return only the requested structured response. Use its exact property names and do not substitute
+similarly named fields. Do not include markdown or private chain-of-thought."""
 
 
 class QuestionUnderstanding(BaseModel):
@@ -30,8 +36,19 @@ class HypothesisPlan(BaseModel):
     hypotheses: list[Hypothesis]
 
 
+class PlannedInvestigationStep(BaseModel):
+    """LLM-facing plan that selects a human-readable hypothesis name, not an internal ID."""
+
+    iteration: int = 0
+    hypothesis_name: str
+    action: str
+    datasource_id: str | None = None
+    rationale: str
+    expected_information_gain: float = Field(default=0.5, ge=0, le=1)
+
+
 class InvestigationPlan(BaseModel):
-    step: InvestigationStep
+    step: PlannedInvestigationStep
 
 
 class QueryPlan(BaseModel):
@@ -69,16 +86,28 @@ class OpenAICompatibleLLM(LLM):
             raise RuntimeError("OPENAI_API_KEY is required to run an investigation")
         if self.client is None:
             self.client = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-        response = await self.client.chat.completions.create(
-            model=settings.openai_model,
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"},
-            ],
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise RuntimeError("The model returned an empty response")
-        return response_model.model_validate_json(content)
+        step_name = response_model.__name__
+        logger.info("LLM step started: step=%s model=%s", step_name, settings.openai_model)
+        try:
+            # `parse` uses OpenAI Structured Outputs: the response is constrained to the
+            # Pydantic schema, unlike JSON mode which guarantees valid JSON only.
+            response = await self.client.chat.completions.parse(
+                model=settings.openai_model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"},
+                ],
+                response_format=response_model,
+            )
+            message = response.choices[0].message
+            if message.parsed is None:
+                if message.refusal:
+                    raise RuntimeError("The model declined to produce the requested structured response")
+                raise RuntimeError("The model returned an empty structured response")
+            result = message.parsed
+        except Exception:
+            logger.exception("LLM step failed: step=%s", step_name)
+            raise
+
+        logger.info("LLM step completed: step=%s output=%s", step_name, result.model_dump_json())
+        return result

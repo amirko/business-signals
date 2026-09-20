@@ -42,6 +42,9 @@ class PostgreSQLDatasource(Datasource):
             await connection.execute(text("SELECT 1"))
         self.summary.connected = True
 
+    async def close(self) -> None:
+        await self.engine.dispose()
+
     async def _structure_rows(self) -> list[dict[str, Any]]:
         sql = """
         SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.is_nullable,

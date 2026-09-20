@@ -1,11 +1,10 @@
 'use client';
 
 import {
-  Activity, ArrowRight, Check, ChevronDown, ChevronRight, CircleDot, CloudLightning, Code2,
-  Database, GitBranch, HelpCircle, Layers3, Play, Plus, RefreshCw, Search,
-  ShieldCheck, Sparkles, X,
+  Activity, ArrowRight, ChevronDown, ChevronRight, CircleDot, Code2, Database, GitBranch,
+  HelpCircle, Layers3, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,108 +14,58 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Textarea } from '@/components/ui/textarea';
 
 type View = 'investigate' | 'sources' | 'architecture';
-type TimelineItem = {
-  kind: 'hypothesis' | 'query' | 'evidence' | 'research' | 'complete';
-  eyebrow: string;
-  title: string;
-  detail: string;
+type HypothesisStep = {
+  id: string;
+  type: string;
+  message: string;
   source?: string;
 };
+type Hypothesis = { id: string; name: string; description: string; confidence: number; status: string };
+type Evidence = { id: string; description: string; relationship: string; confidence: number; hypothesis_ids: string[] };
+type FinalAnalysis = { likely_root_cause: string | null; confidence: number; summary: string; caveats: string[] };
+type InvestigationEvent = { id: string; type: string; message: string; data: Record<string, unknown> };
 type Datasource = { id: string; name: string; type: string; connected: boolean; table_count: number; schema_cached: boolean; discovered_at: string | null };
 type Column = { name: string; data_type: string; nullable: boolean; primary_key: boolean };
 type SchemaTable = { schema_name: string; name: string; columns: Column[]; foreign_keys: Record<string, string>[]; indexes: { name: string; definition: string }[]; approximate_rows: number | null; is_hypertable: boolean; time_column: string | null };
 type SchemaMetadata = { datasource_id: string; structural_metadata: SchemaTable[]; fingerprint: string; discovered_at: string };
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
-const sampleTimeline: TimelineItem[] = [
-  { kind: 'hypothesis', eyebrow: 'Hypotheses formed', title: 'Four explanations are plausible', detail: 'Inventory shortage · pricing change · regional demand · supplier disruption' },
-  { kind: 'query', eyebrow: 'Investigation 01', title: 'Check whether lost sales track stock availability', detail: 'One query can separate a demand decline from a supply constraint.', source: 'Sales Analytics · TimescaleDB' },
-  { kind: 'evidence', eyebrow: 'Evidence', title: 'Inventory fell before revenue', detail: 'Available units dropped 47% across the affected SKUs, beginning six days before sales declined.', source: 'Direct · 0.86 confidence' },
-  { kind: 'query', eyebrow: 'Investigation 02', title: 'Resolve the affected products to their suppliers', detail: '11 of 14 affected outdoor SKUs map to the same supplier: S17.', source: 'Product Catalog · PostgreSQL' },
-  { kind: 'research', eyebrow: 'Selective external research', title: 'Supplier-side disruption is now plausible', detail: 'Search event records for the supplier region and exact disruption window. External context remains correlated evidence.', source: 'News / event specialist' },
-  { kind: 'complete', eyebrow: 'Investigation complete', title: 'Supplier-driven stock shortage', detail: 'The decline is best explained by stock unavailability concentrated in S17 products—not weaker regional demand.', source: 'High confidence · 0.84' },
-];
+const defaultQuestion = 'Why did unit sales of Shell Jacket 001, Trail Backpack 006, Day Pack 011, and Rain Cover 016 in northern Italian stores fall after July 14, 2024?';
 
-const hypotheses = [
-  { name: 'Stock shortage', value: 84, status: 'Supported', tone: 'good' },
-  { name: 'Supplier disruption', value: 76, status: 'Supported', tone: 'good' },
-  { name: 'Regional demand decline', value: 18, status: 'Weakened', tone: 'muted' },
-  { name: 'Pricing change', value: 4, status: 'Rejected', tone: 'bad' },
-];
+class ClientErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
 
-const defaultQuestion = 'Why did outdoor-product revenue fall sharply in northern Italy during July?';
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
 
-declare global {
-  interface Document {
-    modelContext?: {
-      registerTool: (tool: {
-        name: string;
-        title: string;
-        description: string;
-        inputSchema: object;
-        annotations: { readOnlyHint: boolean; untrustedContentHint: boolean };
-        execute: (input: unknown) => Promise<unknown>;
-      }, options?: { signal?: AbortSignal }) => void | Promise<void>;
-    };
+  componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error('Business Signals client error', error, errorInfo);
+  }
+
+  render(): ReactNode {
+    if (this.state.hasError) {
+      return <main className="client-error"><h1>Something went wrong</h1><p>The app could not complete that action. Refresh and try again.</p><button onClick={() => window.location.reload()}>Refresh app</button></main>;
+    }
+    return this.props.children;
   }
 }
 
 export default function Home() {
   const [view, setView] = useState<View>('investigate');
   const [question, setQuestion] = useState(defaultQuestion);
-  const [running, setRunning] = useState(false);
-  const [shownSteps, setShownSteps] = useState(0);
+  const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [sourceCount, setSourceCount] = useState(0);
 
-  const startInvestigation = (nextQuestion?: string) => {
-    if (nextQuestion) setQuestion(nextQuestion);
-    setView('investigate');
-    setShownSteps(0);
-    setRunning(true);
-  };
-
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setTimeout(() => setShownSteps((value) => {
-      const next = Math.min(value + 1, sampleTimeline.length);
-      if (next === sampleTimeline.length) setRunning(false);
-      return next;
-    }), 650);
-    return () => window.clearTimeout(timer);
-  }, [running, shownSteps]);
-
-  useEffect(() => {
-    const context = document.modelContext;
-    if (!context?.registerTool) return;
-    const lifecycle = new AbortController();
-    void Promise.resolve(context.registerTool({
-      name: 'start_business_investigation',
-      title: 'Start business investigation',
-      description: 'Start the visible root-cause investigation demo with a specific business question.',
-      inputSchema: {
-        type: 'object',
-        properties: { question: { type: 'string', minLength: 10 } },
-        required: ['question'],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      async execute(input) {
-        const candidate = input as { question?: unknown };
-        if (typeof candidate.question !== 'string' || candidate.question.trim().length < 10) {
-          throw new Error('question must be a string with at least 10 characters');
-        }
-        setQuestion(candidate.question.trim());
-        setView('investigate');
-        setShownSteps(0);
-        setRunning(true);
-        return { status: 'started', question: candidate.question.trim() };
-      },
-    }, { signal: lifecycle.signal })).catch(() => undefined);
-    return () => lifecycle.abort();
+    fetch(`${apiUrl}/api/datasources`)
+      .then((response) => response.ok ? response.json() as Promise<Datasource[]> : Promise.reject())
+      .then((sources) => { setDatasources(sources); setSourceCount(sources.length); })
+      .catch(() => undefined);
   }, []);
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <ClientErrorBoundary><div className="min-h-screen bg-background text-foreground">
       <header className="app-header">
         <button className="brand" onClick={() => setView('investigate')} aria-label="Business Signals home">
           <span className="brand-mark"><GitBranch /></span>
@@ -143,12 +92,12 @@ export default function Home() {
         </aside>
 
         <main className="main-content">
-          {view === 'investigate' && <InvestigationView question={question} setQuestion={setQuestion} running={running} shownSteps={shownSteps} onStart={() => startInvestigation()} />}
-          {view === 'sources' && <SourcesView onSourceCount={setSourceCount} />}
+          {view === 'investigate' && <InvestigationView question={question} setQuestion={setQuestion} datasources={datasources} />}
+          {view === 'sources' && <SourcesView onSourceCount={setSourceCount} onSourcesChanged={setDatasources} />}
           {view === 'architecture' && <ArchitectureView />}
         </main>
       </div>
-    </div>
+    </div></ClientErrorBoundary>
   );
 }
 
@@ -156,72 +105,177 @@ function NavItem({ active, icon, label, count, onClick }: { active: boolean; ico
   return <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <span className="nav-count">{count}</span>}</button>;
 }
 
-function InvestigationView({ question, setQuestion, running, shownSteps, onStart }: { question: string; setQuestion: (value: string) => void; running: boolean; shownSteps: number; onStart: () => void }) {
-  const complete = shownSteps === sampleTimeline.length;
+function InvestigationView({ question, setQuestion, datasources }: { question: string; setQuestion: (value: string) => void; datasources: Datasource[] }) {
+  const [selectedDatasourceIds, setSelectedDatasourceIds] = useState<string[]>([]);
+  const [hypotheses, setHypotheses] = useState<Hypothesis[]>([]);
+  const [evidence, setEvidence] = useState<Evidence[]>([]);
+  const [hypothesisSteps, setHypothesisSteps] = useState<Record<string, HypothesisStep[]>>({});
+  const [expandedHypotheses, setExpandedHypotheses] = useState<Record<string, boolean>>({});
+  const [finalAnalysis, setFinalAnalysis] = useState<FinalAnalysis | null>(null);
+  const [clarificationQuestion, setClarificationQuestion] = useState<string | null>(null);
+  const [clarificationResponse, setClarificationResponse] = useState('');
+  const [error, setError] = useState('');
+  const [running, setRunning] = useState(false);
+  const stream = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    setSelectedDatasourceIds((current) => current.filter((id) => datasources.some((source) => source.id === id)));
+  }, [datasources]);
+  useEffect(() => () => stream.current?.close(), []);
+
+  const addHypothesisStep = (hypothesisId: string, event: InvestigationEvent) => {
+    const datasourceId = typeof event.data.datasource_id === 'string' ? event.data.datasource_id : undefined;
+    const source = datasourceId ? datasources.find((item) => item.id === datasourceId)?.name : undefined;
+    setHypothesisSteps((current) => {
+      const existing = current[hypothesisId] ?? [];
+      if (existing.some((item) => item.id === event.id)) return current;
+      return { ...current, [hypothesisId]: [...existing, { id: event.id, type: event.type, message: event.message, source }] };
+    });
+  };
+
+  const handleEvent = (event: InvestigationEvent) => {
+    if ((event.type === 'HypothesisCreated' || event.type === 'HypothesisUpdated') && event.data.hypothesis) {
+      const hypothesis = event.data.hypothesis as Hypothesis;
+      setHypotheses((current) => current.some((item) => item.id === hypothesis.id)
+        ? current.map((item) => item.id === hypothesis.id ? hypothesis : item)
+        : [...current, hypothesis]);
+      if (event.type === 'HypothesisUpdated') addHypothesisStep(hypothesis.id, event);
+    }
+    const hypothesisId = typeof event.data.hypothesis_id === 'string' ? event.data.hypothesis_id : undefined;
+    if (hypothesisId && ['DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted'].includes(event.type)) addHypothesisStep(hypothesisId, event);
+    if (event.type === 'EvidenceFound' && event.data.evidence) {
+      const found = event.data.evidence as Evidence;
+      setEvidence((current) => [...current.filter((item) => item.id !== found.id), found]);
+    }
+    if (event.type === 'HumanInputRequested') {
+      setClarificationQuestion(event.message); setClarificationResponse(''); setRunning(false);
+    }
+    if (event.type === 'HumanInputReceived') {
+      setClarificationQuestion(null); setRunning(true);
+    }
+    if (event.type === 'InvestigationCompleted') {
+      setFinalAnalysis(event.data.final_analysis as FinalAnalysis);
+      setRunning(false); stream.current?.close(); stream.current = null;
+    }
+    if (event.type === 'InvestigationFailed') {
+      setError(event.message);
+      setRunning(false); stream.current?.close(); stream.current = null;
+    }
+  };
+
+  const startInvestigation = async () => {
+    if (selectedDatasourceIds.length === 0) { setError('Choose at least one connected datasource first.'); return; }
+    setError(''); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setExpandedHypotheses({}); setFinalAnalysis(null); setClarificationQuestion(null); setClarificationResponse(''); setRunning(true); stream.current?.close();
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, datasource_ids: selectedDatasourceIds }) });
+      if (!response.ok) {
+        throw new Error(response.status === 404
+          ? 'A selected datasource is no longer available. Refresh the page and select it again.'
+          : 'The investigation could not be started. Check the datasource connection and backend logs.');
+      }
+      const created = await response.json() as { investigation_id: string };
+      const eventSource = new EventSource(`${apiUrl}/api/investigations/${created.investigation_id}/events`);
+      stream.current = eventSource;
+      const processEvent = (message: Event) => {
+        try {
+          handleEvent(JSON.parse((message as MessageEvent).data) as InvestigationEvent);
+        } catch (cause) {
+          console.error('Could not process investigation event', cause, message);
+          setError('An investigation update could not be displayed. Check the browser console and backend logs.');
+          setRunning(false); eventSource.close(); stream.current = null;
+        }
+      };
+      ['InvestigationStarted', 'HypothesisCreated', 'DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted', 'EvidenceFound', 'HypothesisUpdated', 'HumanInputRequested', 'HumanInputReceived', 'InvestigationCompleted', 'InvestigationFailed'].forEach((type) => eventSource.addEventListener(type, processEvent));
+      eventSource.onerror = () => { if (stream.current === eventSource) { setError('The live investigation stream disconnected.'); setRunning(false); eventSource.close(); stream.current = null; } };
+    } catch (cause) { console.error('Could not start investigation', cause); setError('The investigation could not be started. Check the backend logs and try again.'); setRunning(false); }
+  };
+
+  const submitClarification = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!stream.current || !clarificationResponse.trim()) return;
+    const investigationId = stream.current.url.split('/').at(-2);
+    if (!investigationId) return;
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations/${investigationId}/responses`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ response: clarificationResponse.trim() }),
+      });
+      if (!response.ok) throw new Error(`Clarification request failed with ${response.status}`);
+      setClarificationQuestion(null); setClarificationResponse(''); setRunning(true);
+    } catch (cause) {
+      console.error('Could not submit clarification', cause);
+      setError('The clarification could not be submitted. Check the backend logs and try again.');
+    }
+  };
+
+  const toggleDatasource = (id: string) => setSelectedDatasourceIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   return (
     <div className="investigation-layout">
       <section className="work-column">
         <div className="page-heading">
           <div><span className="section-kicker">ROOT-CAUSE WORKBENCH</span><h1>Ask why. Follow the evidence.</h1></div>
-          <Badge variant="outline" className="demo-badge"><Sparkles /> Demo scenario</Badge>
+          <Badge variant="outline" className="demo-badge"><Activity /> Live investigation</Badge>
         </div>
 
         <div className="question-card">
           <label htmlFor="question">Business question</label>
           <Textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} />
           <div className="question-footer">
-            <div className="selected-sources"><span><Database /> Sales Analytics</span><span><Database /> Product Catalog</span></div>
-            <Button onClick={onStart} disabled={running || question.trim().length < 10} className="investigate-button">
+            <div className="selected-sources datasource-picker">{datasources.map((source) => <label key={source.id}><input type="checkbox" checked={selectedDatasourceIds.includes(source.id)} onChange={() => toggleDatasource(source.id)} /><Database /> {source.name}</label>)}{datasources.length === 0 && <span>Connect a datasource to investigate</span>}</div>
+            <Button onClick={startInvestigation} disabled={running || question.trim().length < 10 || datasources.length === 0} className="investigate-button">
               {running ? <><RefreshCw className="spin" /> Investigating</> : <><Play /> Investigate</>}
             </Button>
           </div>
         </div>
 
         <div className="timeline-heading">
-          <div><h2>Investigation timeline</h2><span>{running ? 'Graph is choosing the next step' : complete ? '6 decisions · 2 datasources · 1 external call' : 'Ready'}</span></div>
+          <div><h2>Hypothesis investigation tree</h2><span>{running ? 'The graph is evaluating live evidence' : finalAnalysis ? 'Investigation complete' : 'Ready'}</span></div>
           {running && <span className="live-pill"><span /> Live</span>}
         </div>
 
-        <div className="timeline" aria-live="polite">
-          {sampleTimeline.slice(0, shownSteps).map((item, index) => <TimelineCard key={`${item.kind}-${index}`} item={item} last={index === shownSteps - 1} />)}
-          {running && shownSteps < sampleTimeline.length && <div className="thinking-row"><span className="thinking-icon"><Activity /></span><div><strong>Choosing the next investigation…</strong><span>Scoring expected information gain across active hypotheses</span></div></div>}
+        <div className="hypothesis-tree-list" aria-live="polite">
+          {hypotheses.map((hypothesis, hypothesisIndex) => {
+            const relatedEvidence = evidence.filter((item) => item.hypothesis_ids.includes(hypothesis.id));
+            const steps = hypothesisSteps[hypothesis.id] ?? [];
+            const hypothesisLabel = `H${hypothesisIndex + 1}`;
+            const tone = hypothesis.status === 'rejected' ? 'bad' : hypothesis.status === 'supported' || hypothesis.status === 'confirmed' ? 'good' : 'muted';
+            return <details className="hypothesis-tree" key={hypothesis.id} open={expandedHypotheses[hypothesis.id] ?? true} onToggle={(event) => { const isOpen = event.currentTarget.open; setExpandedHypotheses((current) => ({ ...current, [hypothesis.id]: isOpen })); }}>
+              <summary>
+                <code>{hypothesisLabel}</code><strong>{hypothesis.name}</strong><span className={tone}>{hypothesis.status}</span><span className="tree-confidence">{Math.round(hypothesis.confidence * 100)}%</span><ChevronDown />
+              </summary>
+              <div className="tree-children">
+                <p className="hypothesis-description">{hypothesis.description}</p>
+                {steps.map((step) => <article className="hypothesis-step" key={step.id}><span>{step.type.replaceAll(/([A-Z])/g, ' $1').trim()}</span><p>{step.message}</p>{step.source && <small>{step.source}</small>}</article>)}
+                {relatedEvidence.map((item) => {
+                  const evidenceLabel = `E${evidence.findIndex((candidate) => candidate.id === item.id) + 1}`;
+                  return <article className="hypothesis-evidence" key={item.id}><code>{evidenceLabel}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>;
+                })}
+                {steps.length === 0 && relatedEvidence.length === 0 && <p className="tree-empty">Awaiting the first investigation step.</p>}
+              </div>
+            </details>;
+          })}
+          {!running && hypotheses.length === 0 && <div className="empty-timeline">Start an investigation to build a hypothesis tree.</div>}
+          {running && <div className="thinking-row"><span className="thinking-icon"><Activity /></span><div><strong>Waiting for the next graph decision…</strong><span>The engine is selecting the most informative internal step.</span></div></div>}
         </div>
+        {clarificationQuestion && <form className="clarification-panel" onSubmit={submitClarification}><span className="section-kicker">CLARIFICATION NEEDED</span><h2>Before continuing</h2><p>{clarificationQuestion}</p><Textarea value={clarificationResponse} onChange={(event) => setClarificationResponse(event.target.value)} placeholder="Provide the business context the investigation needs…" rows={3} /><div><span>The investigation is paused until you respond.</span><Button type="submit" disabled={!clarificationResponse.trim()}>Resume investigation <ArrowRight /></Button></div></form>}
+        {error && <output className="notice investigation-error">{error}</output>}
+        {finalAnalysis && <article className="final-result"><span className="section-kicker">FINAL ANALYSIS</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><p>{finalAnalysis.summary}</p><span className="source-chip">{Math.round(finalAnalysis.confidence * 100)}% confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}</article>}
       </section>
 
       <aside className="hypothesis-panel">
         <div className="panel-header"><div><span className="section-kicker">LIVE MODEL</span><h2>Hypotheses</h2></div><CircleDot /></div>
         <p className="panel-copy">Confidence changes only when new evidence supports or contradicts a claim.</p>
-        <div className="hypothesis-list">
-          {hypotheses.map((hypothesis) => (
-            <div className="hypothesis" key={hypothesis.name}>
-              <div className="hypothesis-top"><strong>{hypothesis.name}</strong><span className={hypothesis.tone}>{hypothesis.status}</span></div>
-              <div className="confidence-track"><span style={{ width: complete ? `${hypothesis.value}%` : '24%' }} className={hypothesis.tone} /></div>
-              <span className="confidence-number">{complete ? hypothesis.value : 24}%</span>
-            </div>
-          ))}
-        </div>
+        <p className="panel-copy">Each node in the tree shows its status, evidence, and completed investigative steps.</p>
         <div className="budget-card">
-          <div><span>Investigation budget</span><strong>{complete ? '6 / 8' : `${Math.max(1, shownSteps)} / 8`} iterations</strong></div>
-          <div className="budget-bar"><span style={{ width: complete ? '75%' : `${Math.max(12, shownSteps * 12)}%` }} /></div>
-          <div className="budget-grid"><span><strong>4</strong> SQL queries</span><span><strong>1</strong> external call</span></div>
+          <div><span>Investigation state</span><strong>{running ? 'Running' : finalAnalysis ? 'Complete' : 'Ready'}</strong></div>
+          <div className="budget-bar"><span style={{ width: running ? '55%' : finalAnalysis ? '100%' : '0%' }} /></div>
+          <div className="budget-grid"><span><strong>{Object.values(hypothesisSteps).flat().filter((item) => item.type.startsWith('Query')).length}</strong> query events</span><span><strong>{evidence.length}</strong> evidence items</span></div>
         </div>
       </aside>
     </div>
   );
 }
 
-function TimelineCard({ item, last }: { item: TimelineItem; last: boolean }) {
-  const icons = { hypothesis: <GitBranch />, query: <Database />, evidence: <Check />, research: <CloudLightning />, complete: <Sparkles /> };
-  return (
-    <article className={`timeline-card ${item.kind} ${last ? 'just-added' : ''}`}>
-      <span className="timeline-node">{icons[item.kind]}</span>
-      <div className="timeline-body"><span className="timeline-eyebrow">{item.eyebrow}</span><h3>{item.title}</h3><p>{item.detail}</p>{item.source && <span className="source-chip">{item.source}</span>}</div>
-      <ChevronRight className="card-chevron" />
-    </article>
-  );
-}
-
-function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void }) {
+function SourcesView({ onSourceCount, onSourcesChanged }: { onSourceCount: (count: number) => void; onSourcesChanged: (sources: Datasource[]) => void }) {
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState('');
   const [sources, setSources] = useState<Datasource[]>([]);
@@ -235,7 +289,14 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
   useEffect(() => {
     fetch(`${apiUrl}/api/datasources`)
       .then((response) => response.ok ? response.json() as Promise<Datasource[]> : Promise.reject())
-      .then((result) => { setSources(result); onSourceCount(result.length); })
+      .then(async (result) => {
+        setSources(result); onSourceCount(result.length); onSourcesChanged(result);
+        const cached = await Promise.all(result.filter((source) => source.schema_cached).map(async (source) => {
+          const response = await fetch(`${apiUrl}/api/datasources/${source.id}/metadata`);
+          return response.ok ? [source.id, await response.json() as SchemaMetadata] as const : null;
+        }));
+        setMetadata(Object.fromEntries(cached.filter((item): item is readonly [string, SchemaMetadata] => item !== null)));
+      })
       .catch(() => setNotice('Backend unavailable. Start the API locally to connect a datasource.'));
   }, []);
 
@@ -253,6 +314,7 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
       setSources((current) => {
         const updated = [...current, added];
         onSourceCount(updated.length);
+        onSourcesChanged(updated);
         return updated;
       });
       setShowForm(false); setNotice('Datasource connected. Select Discover schema when you are ready.');
@@ -286,6 +348,26 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
     } finally { setLoadingSchemaId(null); }
   };
 
+  const deleteDatasource = async (source: Datasource) => {
+    if (!window.confirm(`Delete ${source.name}? Its saved connection and cached schema will be removed.`)) return;
+    try {
+      const response = await fetch(`${apiUrl}/api/datasources/${source.id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(`Delete request failed with ${response.status}`);
+      setSources((current) => {
+        const updated = current.filter((item) => item.id !== source.id);
+        onSourceCount(updated.length); onSourcesChanged(updated);
+        return updated;
+      });
+      setMetadata((current) => { const { [source.id]: _removed, ...remaining } = current; return remaining; });
+      setConsoleLines((current) => { const { [source.id]: _removed, ...remaining } = current; return remaining; });
+      setSelectedTable(null);
+      setNotice(`${source.name} was deleted.`);
+    } catch (cause) {
+      console.error('Could not delete datasource', cause);
+      setNotice('The datasource could not be deleted. Check the backend logs and try again.');
+    }
+  };
+
   return (
     <section className="standard-page">
       <div className="page-heading">
@@ -304,7 +386,7 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
             <div className="form-field"><label htmlFor="source-username">Username</label><Input id="source-username" required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} /></div>
             <div className="form-field full-field"><label htmlFor="source-password">Password</label><Input id="source-password" required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
           </div>
-          <div className="form-actions"><span><ShieldCheck /> Never persisted or shared with the LLM</span><Button type="submit">Test & add <ArrowRight /></Button></div>
+          <div className="form-actions"><span><ShieldCheck /> Saved only in this local app store; never shared with the LLM</span><Button type="submit">Test & add <ArrowRight /></Button></div>
         </form>
       )}
       {notice && <output className="notice">{notice}</output>}
@@ -315,8 +397,8 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
             <div className="source-summary">
               <span className="source-icon"><Database /></span>
               <div className="source-info"><div><h2>{source.name}</h2><Badge variant="outline">{source.type}</Badge></div><p>{source.schema_cached ? `${source.table_count} tables discovered` : 'Schema not loaded'}</p></div>
-              <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
-              <Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button>
+              <div className="connection-meta"><span><span className="pulse-dot" /> {source.connected ? 'Connected' : 'Saved'}</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
+              <div className="source-actions"><Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button><Button variant="destructive" size="icon" onClick={() => deleteDatasource(source)} aria-label={`Delete ${source.name}`}><Trash2 /></Button></div>
             </div>
             {(consoleLines[source.id] || metadata[source.id]) && <Collapsible open={schemaDetailsOpen[source.id] ?? true} onOpenChange={(open) => setSchemaDetailsOpen((current) => ({ ...current, [source.id]: open }))}>
               <CollapsibleTrigger className="schema-details-trigger"><span><Database /> Schema discovery details</span><span>{metadata[source.id] ? `${metadata[source.id].structural_metadata.length} tables` : 'Running…'}<ChevronDown /></span></CollapsibleTrigger>

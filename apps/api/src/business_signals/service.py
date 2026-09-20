@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from typing import Any
@@ -18,6 +19,8 @@ from business_signals.models import (
     InvestigationState,
     InvestigationStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class InvestigationService:
@@ -57,16 +60,30 @@ class InvestigationService:
             async for chunk in self.engine.graph.astream(input_value, config=config, stream_mode="values"):
                 state = chunk if isinstance(chunk, InvestigationState) else InvestigationState.model_validate(chunk)
                 self._records[investigation_id] = state
+            snapshot = await self.engine.graph.aget_state(config)
+            checkpointed = InvestigationState.model_validate(snapshot.values)
+            self._records[investigation_id] = checkpointed
+            if checkpointed.status == InvestigationStatus.WAITING_FOR_HUMAN and checkpointed.pending_human_question:
+                await self._publish(
+                    InvestigationEvent(
+                        investigation_id=investigation_id,
+                        type="HumanInputRequested",
+                        message=checkpointed.pending_human_question,
+                        data={"question": checkpointed.pending_human_question},
+                    )
+                )
         except Exception as exc:
+            logger.exception("Investigation %s failed", investigation_id)
+            safe_message = "The investigation could not be completed. Check the backend logs and try again."
             current = self._records[investigation_id]
-            failed = current.model_copy(update={"status": InvestigationStatus.FAILED, "error": str(exc)})
+            failed = current.model_copy(update={"status": InvestigationStatus.FAILED, "error": safe_message})
             self._records[investigation_id] = failed
             await self._publish(
                 InvestigationEvent(
                     investigation_id=investigation_id,
                     type="InvestigationFailed",
-                    message="The investigation stopped because an execution error occurred.",
-                    data={"error": str(exc)},
+                    message=safe_message,
+                    data={"error_code": "investigation_failed"},
                 )
             )
 
@@ -83,9 +100,6 @@ class InvestigationService:
         running = self._tasks.get(investigation_id)
         if running and not running.done():
             raise ValueError("The investigation is still processing its previous step")
-        self._tasks[investigation_id] = asyncio.create_task(
-            self._run(investigation_id, Command(resume=response))
-        )
         resumed = state.model_copy(
             update={
                 "status": InvestigationStatus.RUNNING,
@@ -96,6 +110,16 @@ class InvestigationService:
             }
         )
         self._records[investigation_id] = resumed
+        await self._publish(
+            InvestigationEvent(
+                investigation_id=investigation_id,
+                type="HumanInputReceived",
+                message="Clarification received; investigation resumed.",
+            )
+        )
+        self._tasks[investigation_id] = asyncio.create_task(
+            self._run(investigation_id, Command(resume=response))
+        )
         return resumed
 
     async def events(self, investigation_id: str, after: int = 0) -> AsyncIterator[InvestigationEvent]:

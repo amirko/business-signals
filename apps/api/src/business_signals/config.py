@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +12,7 @@ class Settings(BaseSettings):
     query_timeout_seconds: int = 15
     max_query_rows: int = 500
     web_origin: str = "http://localhost:3000"
+    datasource_store_path: Path = Path(".business-signals/datasources.json")
 
 
 settings = Settings()

@@ -85,7 +85,7 @@ Open `http://localhost:3000`. Add the two seeded connections:
 | Product Catalog | PostgreSQL | 5433 | `catalog` | `investigator` / `investigator` |
 | Sales Analytics | TimescaleDB | 5434 | `analytics` | `investigator` / `investigator` |
 
-Use read-only credentials outside the disposable demo environment. Connection secrets are held only in backend memory and disappear on restart; they are never serialized into graph state or sent to the model.
+Use read-only credentials outside the disposable demo environment. Datasource definitions and discovered schemas are saved locally at `.business-signals/datasources.json` (or `DATASOURCE_STORE_PATH`) so they survive API restarts. The file is gitignored and created with owner-only permissions; it contains the credentials needed to restore local connections. Credentials are never serialized into graph state, API responses, events, logs, or model payloads. Delete a datasource in the UI to remove its saved definition and schema cache.
 
 ## API
 
@@ -93,7 +93,9 @@ Use read-only credentials outside the disposable demo environment. Connection se
 POST /api/datasources/test
 POST /api/datasources
 GET  /api/datasources
+GET  /api/datasources/{id}/metadata   # cached schema; no database call
 POST /api/datasources/{id}/refresh
+DELETE /api/datasources/{id}
 
 POST /api/investigations
 GET  /api/investigations/{id}
@@ -119,7 +121,7 @@ See [the architecture notes](docs/architecture.md) for trust boundaries and exte
 - Data-changing and DDL AST nodes, comments, multiple statements, and `SELECT INTO` are rejected.
 - Queries receive a hard maximum row count and statement timeout.
 - PostgreSQL connections request `default_transaction_read_only=on`.
-- Datasource credentials remain in process memory and are excluded from LLM payloads and events.
+- Datasource credentials are saved only in the gitignored, owner-only local connection store and are excluded from LLM payloads, API responses, events, and logs.
 - Every run has iteration, SQL-query, external-call, and wall-clock budgets.
 - Low-evidence runs return “insufficient evidence” instead of inventing a cause.
 
@@ -146,7 +148,7 @@ npm --prefix apps/web run build
 
 ## Current scope
 
-Version 0.1 intentionally keeps datasource registrations and investigation records in memory. It implements PostgreSQL and TimescaleDB only, relies on live public services for optional external research, and expects an OpenAI-compatible model capable of reliable structured JSON. Durable encrypted credentials, organization authentication, additional adapters, and production-grade distributed checkpoint storage are follow-on work.
+Datasource registrations and their schema cache survive local API restarts; investigation records remain in memory. It implements PostgreSQL and TimescaleDB only, relies on live public services for optional external research, and expects an OpenAI-compatible model capable of reliable structured JSON. Durable encrypted credentials, organization authentication, additional adapters, and production-grade distributed checkpoint storage are follow-on work.
 
 ## License
 

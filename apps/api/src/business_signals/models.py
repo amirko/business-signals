@@ -99,6 +99,7 @@ class HypothesisStatus(str, Enum):
 
 class Hypothesis(BaseModel):
     id: str = Field(default_factory=lambda: f"hyp_{uuid4().hex[:8]}")
+    name: str = Field(min_length=1, max_length=80)
     description: str
     category: str
     confidence: float = Field(ge=0, le=1)
@@ -107,13 +108,23 @@ class Hypothesis(BaseModel):
     status: HypothesisStatus = HypothesisStatus.ACTIVE
 
 
+class EvidenceDataPoint(BaseModel):
+    """A compact, schema-safe fact backing an evidence statement."""
+
+    field: str
+    value: str | int | float | bool | None = None
+
+
 class Evidence(BaseModel):
     id: str = Field(default_factory=lambda: f"ev_{uuid4().hex[:8]}")
     description: str
     source: str
     relationship: Literal["direct", "supporting", "correlated", "contradicting"]
     confidence: float = Field(ge=0, le=1)
-    data: dict[str, Any] = Field(default_factory=dict)
+    hypothesis_ids: list[str] = Field(default_factory=list)
+    # Strict Structured Outputs cannot accept an open-ended JSON object here.
+    # Named values keep evidence inspectable while preserving a closed schema.
+    data: list[EvidenceDataPoint] = Field(default_factory=list)
 
 
 class Observation(BaseModel):
@@ -198,6 +209,7 @@ class InvestigationState(BaseModel):
     metric_definition: MetricDefinition | None = None
     observations: list[Observation] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
+    hypothesis_name_index: dict[str, str] = Field(default_factory=dict)
     evidence: list[Evidence] = Field(default_factory=list)
     investigation_history: list[InvestigationStep] = Field(default_factory=list)
     external_findings: list[ExternalFinding] = Field(default_factory=list)
@@ -206,6 +218,7 @@ class InvestigationState(BaseModel):
     external_request: dict[str, str] | None = None
     pending_step: InvestigationStep | None = None
     pending_human_question: str | None = None
+    human_resume_node: Literal["generate_hypotheses", "select_investigation"] | None = None
     human_feedback: list[HumanFeedback] = Field(default_factory=list)
     iteration: int = 0
     query_count: int = 0

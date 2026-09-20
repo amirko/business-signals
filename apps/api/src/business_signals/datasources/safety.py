@@ -56,3 +56,29 @@ def validate_read_query(sql: str, max_rows: int = 500) -> str:
         if int(value.this) > max_rows:
             statement.set("limit", exp.Limit(expression=exp.Literal.number(max_rows)))
     return statement.sql(dialect="postgres")
+
+
+def validate_query_tables(sql: str, allowed_tables: set[str]) -> str:
+    """Ensure a query only references discovered physical tables for one datasource."""
+    try:
+        statement = sqlglot.parse_one(sql, read="postgres")
+    except sqlglot.errors.ParseError as exc:
+        raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
+
+    cte_names = {cte.alias_or_name for cte in statement.find_all(exp.CTE)}
+    allowed_unqualified = {name.rsplit(".", 1)[-1] for name in allowed_tables}
+    for table in statement.find_all(exp.Table):
+        table_name = table.name
+        if table_name in cte_names:
+            continue
+        qualified_name = f"{table.db}.{table_name}" if table.db else table_name
+        if qualified_name not in allowed_tables and table_name not in allowed_unqualified:
+            raise UnsafeQueryError(f"Query references a table outside the selected datasource: {qualified_name}")
+    return sql
+
+
+def query_references_table(sql: str, table_name: str) -> bool:
+    """Return whether a query reads a physical table, allowing qualified or bare names."""
+    statement = sqlglot.parse_one(sql, read="postgres")
+    bare_name = table_name.rsplit(".", 1)[-1]
+    return any(table.name == bare_name for table in statement.find_all(exp.Table))
