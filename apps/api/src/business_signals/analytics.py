@@ -115,3 +115,27 @@ def before_after(values_before: Sequence[float], values_after: Sequence[float]) 
         raise ValueError("Before and after windows must not be empty")
     before, after = statistics.fmean(values_before), statistics.fmean(values_after)
     return {"before_mean": before, "after_mean": after, "percentage_change": percentage_change(before, after)}
+
+
+def summarize_query_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Produce reproducible numeric facts from SQL output without an LLM."""
+    numeric: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        for key, value in row.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            numeric[key].append(float(value))
+    return {
+        "row_count": len(rows),
+        "numeric_columns": {
+            key: {
+                "count": len(values),
+                "sum": sum(values),
+                "mean": statistics.fmean(values),
+                "min": min(values),
+                "max": max(values),
+            }
+            for key, values in sorted(numeric.items())
+            if values
+        },
+    }

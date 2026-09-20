@@ -123,7 +123,7 @@ class Observation(BaseModel):
 
 
 class InvestigationStep(BaseModel):
-    iteration: int
+    iteration: int = 0
     hypothesis_id: str | None = None
     action: str
     datasource_id: str | None = None

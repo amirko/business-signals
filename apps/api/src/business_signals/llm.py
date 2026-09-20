@@ -35,7 +35,6 @@ class InvestigationPlan(BaseModel):
 
 
 class QueryPlan(BaseModel):
-    datasource_id: str
     sql: str
     purpose: str
 
@@ -48,12 +47,8 @@ class EvidenceAssessment(BaseModel):
 
 
 class InvestigationDecision(BaseModel):
-    action: str = Field(pattern="^(continue|external_weather|external_economy_fx|external_news_event|hitl|finish)$")
+    action: str = Field(pattern="^(continue|finish)$")
     reason: str
-    human_question: str | None = None
-    external_location: str | None = None
-    external_start_date: str | None = None
-    external_end_date: str | None = None
 
 
 class Synthesis(BaseModel):

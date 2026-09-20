@@ -1,31 +1,26 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
 
+from business_signals.analytics import summarize_query_rows
 from business_signals.datasources.registry import DatasourceRegistry
-from business_signals.external import ExternalResearcher
+from business_signals.datasources.safety import validate_read_query
 from business_signals.llm import (
+    LLM,
     EvidenceAssessment,
     HypothesisPlan,
     InvestigationDecision,
     InvestigationPlan,
-    LLM,
     OpenAICompatibleLLM,
     QueryPlan,
     QuestionUnderstanding,
     Synthesis,
 )
 from business_signals.models import (
-    Evidence,
-    FinalAnalysis,
-    HumanFeedback,
     HypothesisStatus,
     InvestigationEvent,
     InvestigationState,
@@ -43,12 +38,10 @@ class InvestigationEngine:
         self,
         registry: DatasourceRegistry,
         llm: LLM | None = None,
-        external: ExternalResearcher | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
         self.registry = registry
         self.llm = llm or OpenAICompatibleLLM()
-        self.external = external or ExternalResearcher()
         self.event_sink = event_sink
         self.graph = self._build_graph()
 
@@ -60,8 +53,6 @@ class InvestigationEngine:
         graph.add_node("execute", self._execute)
         graph.add_node("interpret", self._interpret)
         graph.add_node("decide", self._decide)
-        graph.add_node("external_research", self._external_research)
-        graph.add_node("human_input", self._human_input)
         graph.add_node("synthesize", self._synthesize)
 
         graph.add_edge(START, "understand")
@@ -75,15 +66,11 @@ class InvestigationEngine:
             self._route,
             {
                 "continue": "select_investigation",
-                "external": "external_research",
-                "hitl": "human_input",
                 "finish": "synthesize",
             },
         )
-        graph.add_edge("external_research", "decide")
-        graph.add_edge("human_input", "select_investigation")
         graph.add_edge("synthesize", END)
-        return graph.compile(checkpointer=MemorySaver())
+        return graph.compile()
 
     async def _emit(self, state: InvestigationState, event_type: str, message: str, **data: Any) -> None:
         if self.event_sink:
@@ -150,10 +137,6 @@ class InvestigationEngine:
             {
                 "question": state.question,
                 "datasources": metadata,
-                "unconfirmed_cross_datasource_relations": [
-                    relation.model_dump(mode="json")
-                    for relation in await self.registry.infer_cross_relations([source.id for source in state.datasources])
-                ],
             },
         )
         observations = [Observation(description=item, source="question") for item in result.observations]
@@ -186,6 +169,10 @@ class InvestigationEngine:
             {**self._state_payload(state), "datasources": await self._metadata_payload(state)},
         )
         step = result.step.model_copy(update={"iteration": state.iteration + 1})
+        if step.datasource_id not in {source.id for source in state.datasources}:
+            raise ValueError("The planner selected a datasource outside this investigation")
+        if step.hypothesis_id not in {hypothesis.id for hypothesis in state.hypotheses}:
+            raise ValueError("The planner selected an unknown hypothesis")
         await self._emit(
             state,
             "DatasourceSelected",
@@ -204,23 +191,25 @@ class InvestigationEngine:
             "Write one focused read-only PostgreSQL query for this investigation. Always qualify ambiguous columns and keep the result compact.",
             {"step": state.pending_step.model_dump(mode="json"), "datasources": await self._metadata_payload(state)},
         )
-        allowed_ids = {source.id for source in state.datasources}
-        if result.datasource_id not in allowed_ids:
-            raise ValueError("The planner selected a datasource outside this investigation")
-        await self._emit(state, "QueryStarted", result.purpose, datasource_id=result.datasource_id)
-        rows = await self.registry.get(result.datasource_id).execute_read_query(result.sql)
+        datasource_id = state.pending_step.datasource_id
+        if datasource_id is None:
+            raise RuntimeError("The selected investigation has no datasource")
+        sql = validate_read_query(result.sql)
+        await self._emit(state, "QueryStarted", result.purpose, datasource_id=datasource_id)
+        rows = await self.registry.get(datasource_id).execute_read_query(sql)
+        deterministic_summary = summarize_query_rows(rows)
         await self._emit(
             state,
             "QueryCompleted",
             f"Query returned {len(rows)} rows",
-            datasource_id=result.datasource_id,
+            datasource_id=datasource_id,
             row_count=len(rows),
         )
-        step = state.pending_step.model_copy(update={"datasource_id": result.datasource_id, "query": result.sql})
+        step = state.pending_step.model_copy(update={"query": sql})
         observation = Observation(
             description=result.purpose,
-            value={"rows": rows[:100], "row_count": len(rows)},
-            source=result.datasource_id,
+            value={"rows": rows[:100], "deterministic_summary": deterministic_summary},
+            source=datasource_id,
         )
         return {
             "pending_step": step,
@@ -251,7 +240,7 @@ class InvestigationEngine:
             "evidence": [*state.evidence, *new_evidence],
             "hypotheses": result.hypotheses,
             "confidence": result.confidence,
-            "pending_human_question": result.ambiguity or state.pending_human_question,
+            "pending_human_question": result.ambiguity,
         }
 
     def _budget_exhausted(self, state: InvestigationState) -> bool:
@@ -265,89 +254,19 @@ class InvestigationEngine:
     async def _decide(self, state: InvestigationState) -> dict[str, Any]:
         if self._budget_exhausted(state):
             return {"next_action": "finish"}
-        if state.pending_human_question:
-            return {"next_action": "hitl", "status": InvestigationStatus.WAITING_FOR_HUMAN}
         supported = [h for h in state.hypotheses if h.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}]
         if supported and (state.confidence or 0) >= 0.78 and len(state.evidence) >= 2:
             return {"next_action": "finish"}
 
         result = await self.llm.structured(
             InvestigationDecision,
-            "Decide whether to continue internal investigation, selectively call one external specialist, request human clarification, or finish. Prefer internal validation. External research requires a specific plausible mechanism and dates.",
+            "Decide whether another internal investigation is needed or whether the available evidence is sufficient to finish.",
             self._state_payload(state),
         )
-        action = result.action
-        if action.startswith("external_") and state.external_call_count >= state.limits.max_external_calls:
-            action = "continue"
-        external_request = None
-        if action.startswith("external_"):
-            category = action.removeprefix("external_")
-            if not (result.external_start_date and result.external_end_date and result.external_location):
-                action = "continue"
-            else:
-                external_request = {
-                    "category": category,
-                    "subject": result.external_location,
-                    "start_date": result.external_start_date,
-                    "end_date": result.external_end_date,
-                    "context": result.reason,
-                }
-        return {
-            "next_action": action,
-            "pending_human_question": result.human_question if action == "hitl" else None,
-            "external_request": external_request,
-            "status": InvestigationStatus.WAITING_FOR_HUMAN if action == "hitl" else InvestigationStatus.RUNNING,
-        }
+        return {"next_action": result.action, "status": InvestigationStatus.RUNNING}
 
     def _route(self, state: InvestigationState) -> str:
-        if (state.next_action or "continue").startswith("external_"):
-            return "external"
-        return {"hitl": "hitl", "finish": "finish"}.get(state.next_action or "continue", "continue")
-
-    async def _external_research(self, state: InvestigationState) -> dict[str, Any]:
-        request = state.external_request
-        if not request:
-            return {"next_action": "continue"}
-        await self._emit(
-            state,
-            "ExternalResearchStarted",
-            request["context"],
-            category=request["category"],
-            subject=request["subject"],
-        )
-        finding = await self.external.research(**request)  # type: ignore[arg-type]
-        await self._emit(
-            state,
-            "ExternalFindingReceived",
-            finding.observation,
-            finding=finding.model_dump(mode="json"),
-        )
-        evidence = Evidence(
-            description=finding.observation,
-            source=finding.source_title,
-            relationship=finding.relationship,
-            confidence=finding.confidence,
-            data={"url": finding.source_url, "period": finding.period},
-        )
-        return {
-            "external_findings": [*state.external_findings, finding],
-            "evidence": [*state.evidence, evidence],
-            "external_call_count": state.external_call_count + 1,
-            "next_action": "continue",
-            "external_request": None,
-        }
-
-    async def _human_input(self, state: InvestigationState) -> dict[str, Any]:
-        question = state.pending_human_question or "What business context should I use?"
-        await self._emit(state, "HumanInputRequired", question, question=question)
-        response = interrupt({"question": question})
-        feedback = HumanFeedback(question=question, response=str(response))
-        return {
-            "human_feedback": [*state.human_feedback, feedback],
-            "pending_human_question": None,
-            "next_action": "continue",
-            "status": InvestigationStatus.RUNNING,
-        }
+        return "finish" if state.next_action == "finish" else "continue"
 
     async def _synthesize(self, state: InvestigationState) -> dict[str, Any]:
         result = await self.llm.structured(
