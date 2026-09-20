@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 
 type View = 'investigate' | 'sources' | 'architecture';
@@ -20,6 +21,11 @@ type TimelineItem = {
   detail: string;
   source?: string;
 };
+type Datasource = { id: string; name: string; type: string; connected: boolean; table_count: number; schema_cached: boolean; discovered_at: string | null };
+type Column = { name: string; data_type: string; nullable: boolean; primary_key: boolean };
+type SchemaTable = { schema_name: string; name: string; columns: Column[]; foreign_keys: Record<string, string>[]; indexes: { name: string; definition: string }[]; approximate_rows: number | null; is_hypertable: boolean; time_column: string | null };
+type SchemaMetadata = { datasource_id: string; structural_metadata: SchemaTable[]; fingerprint: string; discovered_at: string };
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 const sampleTimeline: TimelineItem[] = [
   { kind: 'hypothesis', eyebrow: 'Hypotheses formed', title: 'Four explanations are plausible', detail: 'Inventory shortage · pricing change · regional demand · supplier disruption' },
@@ -59,7 +65,7 @@ export default function Home() {
   const [question, setQuestion] = useState(defaultQuestion);
   const [running, setRunning] = useState(false);
   const [shownSteps, setShownSteps] = useState(sampleTimeline.length);
-  const [sourceCount, setSourceCount] = useState(2);
+  const [sourceCount, setSourceCount] = useState(0);
 
   const startInvestigation = (nextQuestion?: string) => {
     if (nextQuestion) setQuestion(nextQuestion);
@@ -137,7 +143,7 @@ export default function Home() {
 
         <main className="main-content">
           {view === 'investigate' && <InvestigationView question={question} setQuestion={setQuestion} running={running} shownSteps={shownSteps} onStart={() => startInvestigation()} />}
-          {view === 'sources' && <SourcesView onAdded={() => setSourceCount((value) => value + 1)} />}
+          {view === 'sources' && <SourcesView onSourceCount={setSourceCount} />}
           {view === 'architecture' && <ArchitectureView />}
         </main>
       </div>
@@ -214,29 +220,67 @@ function TimelineCard({ item, last }: { item: TimelineItem; last: boolean }) {
   );
 }
 
-function SourcesView({ onAdded }: { onAdded: () => void }) {
+function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void }) {
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState('');
-  const [sources, setSources] = useState([
-    { name: 'Sales Analytics', type: 'TimescaleDB', detail: '5 hypertables · schema cached', port: '5434' },
-    { name: 'Product Catalog', type: 'PostgreSQL', detail: '6 tables · schema cached', port: '5433' },
-  ]);
+  const [sources, setSources] = useState<Datasource[]>([]);
+  const [metadata, setMetadata] = useState<Record<string, SchemaMetadata>>({});
+  const [consoleLines, setConsoleLines] = useState<Record<string, string[]>>({});
+  const [loadingSchemaId, setLoadingSchemaId] = useState<string | null>(null);
+  const [selectedTable, setSelectedTable] = useState<SchemaTable | null>(null);
   const [form, setForm] = useState({ name: '', type: 'postgresql', host: 'localhost', port: '5432', database: '', username: '', password: '' });
+
+  useEffect(() => {
+    fetch(`${apiUrl}/api/datasources`)
+      .then((response) => response.ok ? response.json() as Promise<Datasource[]> : Promise.reject())
+      .then((result) => { setSources(result); onSourceCount(result.length); })
+      .catch(() => setNotice('Backend unavailable. Start the API locally to connect a datasource.'));
+  }, []);
 
   const submit = async (event: { preventDefault: () => void }) => {
     event.preventDefault();
     setNotice('Testing connection…');
     const { name, type, ...credentials } = form;
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'}/api/datasources`, {
+      const response = await fetch(`${apiUrl}/api/datasources`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, type, credentials: { ...credentials, port: Number(credentials.port) } }),
       });
       if (!response.ok) throw new Error('Connection failed');
-      const added = await response.json() as { name: string; type: string; table_count: number };
-      setSources((current) => [...current, { name: added.name, type: added.type, detail: `${added.table_count} tables · schema cached`, port: form.port }]);
-      onAdded(); setShowForm(false); setNotice('Datasource added. Credentials remain in backend memory.');
+      const added = await response.json() as Datasource;
+      setSources((current) => {
+        const updated = [...current, added];
+        onSourceCount(updated.length);
+        return updated;
+      });
+      setShowForm(false); setNotice('Datasource connected. Select Discover schema when you are ready.');
     } catch { setNotice('Backend unavailable. Start the API locally, then try again.'); }
+  };
+
+  const discoverSchema = async (source: Datasource) => {
+    const started = new Date().toLocaleTimeString();
+    setLoadingSchemaId(source.id);
+    setConsoleLines((current) => ({ ...current, [source.id]: [
+      `$ ${started}  inspect ${source.type} connection`,
+      '  connected · read-only session enabled',
+      '  reading tables, columns, keys, indexes, and time-series metadata…',
+    ] }));
+    try {
+      const response = await fetch(`${apiUrl}/api/datasources/${source.id}/refresh`, { method: 'POST' });
+      if (!response.ok) throw new Error('Schema discovery failed');
+      const result = await response.json() as SchemaMetadata;
+      setMetadata((current) => ({ ...current, [source.id]: result }));
+      setSources((current) => current.map((item) => item.id === source.id ? { ...item, table_count: result.structural_metadata.length, schema_cached: true, discovered_at: result.discovered_at } : item));
+      setConsoleLines((current) => ({ ...current, [source.id]: [
+        ...current[source.id],
+        `  found ${result.structural_metadata.length} tables`,
+        ...result.structural_metadata.map((table) => `  ✓ ${table.schema_name}.${table.name} · ${table.columns.length} columns${table.is_hypertable ? ` · hypertable (${table.time_column})` : ''}`),
+        `  fingerprint ${result.fingerprint.slice(0, 12)}…`,
+        '  discovery complete',
+      ] }));
+    } catch {
+      setConsoleLines((current) => ({ ...current, [source.id]: [...current[source.id], '  × discovery failed — verify the backend and connection details'] }));
+    } finally { setLoadingSchemaId(null); }
   };
 
   return (
@@ -262,15 +306,23 @@ function SourcesView({ onAdded }: { onAdded: () => void }) {
       )}
       {notice && <output className="notice">{notice}</output>}
       <div className="source-list">
+        {sources.length === 0 && !notice && <div className="empty-sources"><Database /><strong>No datasources connected</strong><span>Add a connection, then explicitly discover its schema.</span></div>}
         {sources.map((source) => (
-          <article className="source-row" key={source.name}>
+          <article className="source-row" key={source.id}>
             <span className="source-icon"><Database /></span>
-            <div className="source-info"><div><h2>{source.name}</h2><Badge variant="outline">{source.type}</Badge></div><p>{source.detail}</p></div>
-            <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>localhost:{source.port}</small></div>
-            <Button variant="outline"><RefreshCw /> Refresh schema</Button>
+            <div className="source-info"><div><h2>{source.name}</h2><Badge variant="outline">{source.type}</Badge></div><p>{source.schema_cached ? `${source.table_count} tables discovered` : 'Schema not loaded'}</p></div>
+            <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
+            <Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button>
+            {consoleLines[source.id] && <div className="schema-console" aria-live="polite">{consoleLines[source.id].map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
+            {metadata[source.id] && <div className="schema-table-list"><span>Detected schema — select a table for details</span>{metadata[source.id].structural_metadata.map((table) => <button key={`${table.schema_name}.${table.name}`} onClick={() => setSelectedTable(table)}><Database /><code>{table.schema_name}.{table.name}</code><small>{table.columns.length} columns{table.approximate_rows !== null ? ` · ~${table.approximate_rows.toLocaleString()} rows` : ''}</small><ChevronRight /></button>)}</div>}
           </article>
         ))}
       </div>
+      <Sheet open={selectedTable !== null} onOpenChange={(open) => !open && setSelectedTable(null)}>
+        <SheetContent className="schema-detail-sheet">
+          {selectedTable && <><SheetHeader><SheetTitle>{selectedTable.schema_name}.{selectedTable.name}</SheetTitle><SheetDescription>{selectedTable.is_hypertable ? `Timescale hypertable · time column: ${selectedTable.time_column}` : 'PostgreSQL table'}{selectedTable.approximate_rows !== null ? ` · approximately ${selectedTable.approximate_rows.toLocaleString()} rows` : ''}</SheetDescription></SheetHeader><div className="schema-detail-body"><h3>Columns</h3><div className="column-list">{selectedTable.columns.map((column) => <div key={column.name}><code>{column.name}</code><span>{column.data_type}</span><small>{column.primary_key ? 'Primary key' : column.nullable ? 'Nullable' : 'Required'}</small></div>)}</div>{selectedTable.foreign_keys.length > 0 && <><h3>Relationships</h3><div className="relationship-list">{selectedTable.foreign_keys.map((key, index) => <code key={index}>{key.column_name} → {key.foreign_schema}.{key.foreign_table}.{key.foreign_column}</code>)}</div></>}{selectedTable.indexes.length > 0 && <><h3>Indexes</h3><div className="relationship-list">{selectedTable.indexes.map((index) => <code key={index.name}>{index.name}</code>)}</div></>}</div></>}
+        </SheetContent>
+      </Sheet>
     </section>
   );
 }

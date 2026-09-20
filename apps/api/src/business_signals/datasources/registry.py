@@ -37,7 +37,6 @@ class DatasourceRegistry:
         await source.test_connection()
         self._sources[source.summary.id] = source
         self._locks[source.summary.id] = asyncio.Lock()
-        await self.metadata(source.summary.id)
         return source.summary
 
     def list(self) -> list[DatasourceSummary]:
