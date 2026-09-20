@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  Activity, ArrowRight, Check, ChevronRight, CircleDot, CloudLightning, Code2,
+  Activity, ArrowRight, Check, ChevronDown, ChevronRight, CircleDot, CloudLightning, Code2,
   Database, GitBranch, HelpCircle, Layers3, Play, Plus, RefreshCw, Search,
   ShieldCheck, Sparkles, X,
 } from 'lucide-react';
@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
@@ -64,7 +65,7 @@ export default function Home() {
   const [view, setView] = useState<View>('investigate');
   const [question, setQuestion] = useState(defaultQuestion);
   const [running, setRunning] = useState(false);
-  const [shownSteps, setShownSteps] = useState(sampleTimeline.length);
+  const [shownSteps, setShownSteps] = useState(0);
   const [sourceCount, setSourceCount] = useState(0);
 
   const startInvestigation = (nextQuestion?: string) => {
@@ -226,6 +227,7 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
   const [sources, setSources] = useState<Datasource[]>([]);
   const [metadata, setMetadata] = useState<Record<string, SchemaMetadata>>({});
   const [consoleLines, setConsoleLines] = useState<Record<string, string[]>>({});
+  const [schemaDetailsOpen, setSchemaDetailsOpen] = useState<Record<string, boolean>>({});
   const [loadingSchemaId, setLoadingSchemaId] = useState<string | null>(null);
   const [selectedTable, setSelectedTable] = useState<SchemaTable | null>(null);
   const [form, setForm] = useState({ name: '', type: 'postgresql', host: 'localhost', port: '5432', database: '', username: '', password: '' });
@@ -260,6 +262,7 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
   const discoverSchema = async (source: Datasource) => {
     const started = new Date().toLocaleTimeString();
     setLoadingSchemaId(source.id);
+    setSchemaDetailsOpen((current) => ({ ...current, [source.id]: true }));
     setConsoleLines((current) => ({ ...current, [source.id]: [
       `$ ${started}  inspect ${source.type} connection`,
       '  connected · read-only session enabled',
@@ -315,8 +318,13 @@ function SourcesView({ onSourceCount }: { onSourceCount: (count: number) => void
               <div className="connection-meta"><span><span className="pulse-dot" /> Connected</span><small>{source.schema_cached ? 'Schema available' : 'Awaiting discovery'}</small></div>
               <Button variant="outline" onClick={() => discoverSchema(source)} disabled={loadingSchemaId === source.id}><RefreshCw className={loadingSchemaId === source.id ? 'spin' : ''} />{source.schema_cached ? 'Refresh schema' : 'Discover schema'}</Button>
             </div>
-            {consoleLines[source.id] && <div className="schema-console" role="log" aria-live="polite">{consoleLines[source.id].map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
-            {metadata[source.id] && <div className="schema-table-list"><span>Detected schema — select a table for details</span>{metadata[source.id].structural_metadata.map((table) => <button key={`${table.schema_name}.${table.name}`} onClick={() => setSelectedTable(table)}><Database /><code>{table.schema_name}.{table.name}</code><small>{table.columns.length} columns{table.approximate_rows !== null ? ` · ~${table.approximate_rows.toLocaleString()} rows` : ''}</small><ChevronRight /></button>)}</div>}
+            {(consoleLines[source.id] || metadata[source.id]) && <Collapsible open={schemaDetailsOpen[source.id] ?? true} onOpenChange={(open) => setSchemaDetailsOpen((current) => ({ ...current, [source.id]: open }))}>
+              <CollapsibleTrigger className="schema-details-trigger"><span><Database /> Schema discovery details</span><span>{metadata[source.id] ? `${metadata[source.id].structural_metadata.length} tables` : 'Running…'}<ChevronDown /></span></CollapsibleTrigger>
+              <CollapsibleContent className="schema-details-content">
+                {consoleLines[source.id] && <div className="schema-console" role="log" aria-live="polite">{consoleLines[source.id].map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}</div>}
+                {metadata[source.id] && <div className="schema-table-list"><span>Detected schema — select a table for details</span>{metadata[source.id].structural_metadata.map((table) => <button key={`${table.schema_name}.${table.name}`} onClick={() => setSelectedTable(table)}><Database /><code>{table.schema_name}.{table.name}</code><small>{table.columns.length} columns{table.approximate_rows !== null ? ` · ~${table.approximate_rows.toLocaleString()} rows` : ''}</small><ChevronRight /></button>)}</div>}
+              </CollapsibleContent>
+            </Collapsible>}
           </article>
         ))}
       </div>
