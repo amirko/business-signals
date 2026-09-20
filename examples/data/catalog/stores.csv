@@ -1,5 +1,17 @@
 id,name,city,region,country,channel
 IT-MIL-01,Milano Centro,Milan,Lombardy,Italy,store
+IT-BER-01,Bergamo Porta Nuova,Bergamo,Lombardy,Italy,store
+IT-BRE-01,Brescia Centro,Brescia,Lombardy,Italy,store
 IT-TUR-01,Torino Porta,Turin,Piedmont,Italy,store
+IT-GEN-01,Genova Porto,Genoa,Liguria,Italy,store
 IT-BOL-01,Bologna Centro,Bologna,Emilia-Romagna,Italy,store
+IT-FIR-01,Firenze Duomo,Florence,Tuscany,Italy,store
+IT-ROM-01,Roma Termini,Rome,Lazio,Italy,store
+IT-NAP-01,Napoli Centro,Naples,Campania,Italy,store
+IT-BAR-01,Bari Vecchia,Bari,Apulia,Italy,store
+IT-PAL-01,Palermo Teatro,Palermo,Sicily,Italy,store
+IT-VER-01,Verona Arena,Verona,Veneto,Italy,store
 IT-WEB-01,Italy Online,Online,National,Italy,online
+IT-AMZ-01,Marketplace Italy,Online,National,Italy,online
+FR-WEB-01,France Online,Online,National,France,online
+DE-WEB-01,Germany Online,Online,National,Germany,online

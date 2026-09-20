@@ -1,4 +1,13 @@
 id,name,country,base_currency
-S17,Alpine Supply Co,Germany,EUR
+S01,Northern Trail Works,Sweden,EUR
+S02,Baltic Home Goods,Poland,EUR
+S03,Iberian Living,Spain,EUR
 S04,Northstar Goods,Italy,EUR
+S05,Horizon Fitness,Netherlands,EUR
+S06,Atlas Travel Supply,France,EUR
+S07,Cedar & Coast,Portugal,EUR
+S08,Danube Digital,Austria,EUR
 S09,Pacific Components,United States,USD
+S10,Kansai Optics,Japan,JPY
+S11,Milan Atelier,Italy,EUR
+S17,Alpine Supply Co,Germany,EUR
