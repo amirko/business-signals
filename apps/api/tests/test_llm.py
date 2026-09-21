@@ -32,6 +32,9 @@ async def test_gpt_request_uses_structured_output_without_temperature(
 
     assert completions.request["response_format"] is QuestionUnderstanding
     assert "temperature" not in completions.request
+    messages = completions.request["messages"]
+    assert isinstance(messages, list)
+    assert "plain business language" in messages[0]["content"]
     assert "LLM step started: step=QuestionUnderstanding" in caplog.text
     assert "LLM step completed: step=QuestionUnderstanding" in caplog.text
 

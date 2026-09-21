@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import re
 from typing import Literal
 
 import httpx
@@ -14,8 +15,29 @@ class ExternalResearcher:
     def __init__(self, timeout: float = 12.0) -> None:
         self.timeout = timeout
 
+    @staticmethod
+    def _validated_period(start_date: str, end_date: str) -> tuple[date, date]:
+        try:
+            start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise ValueError("External research dates must use YYYY-MM-DD") from exc
+        if end < start:
+            raise ValueError("External research end date must not be before its start date")
+        if (end - start).days > 3660:
+            raise ValueError("External research periods are limited to ten years")
+        return start, end
+
+    @staticmethod
+    def _validated_subject(subject: str, label: str) -> str:
+        value = subject.strip()
+        if not value or len(value) > 160 or any(character in value for character in "\r\n\x00"):
+            raise ValueError(f"External research {label} must be between 1 and 160 ordinary characters")
+        return value
+
     async def weather(self, location: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         del context
+        location = self._validated_subject(location, "location")
+        self._validated_period(start_date, end_date)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             geo = await client.get(
                 "https://geocoding-api.open-meteo.com/v1/search",
@@ -50,7 +72,11 @@ class ExternalResearcher:
 
     async def economy_fx(self, currency_pair: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         del context
-        base, quote = currency_pair.upper().split("/")
+        self._validated_period(start_date, end_date)
+        currency_pair = self._validated_subject(currency_pair, "currency pair").upper()
+        if not re.fullmatch(r"[A-Z]{3}/[A-Z]{3}", currency_pair):
+            raise ValueError("External research currency pairs must use the form USD/EUR")
+        base, quote = currency_pair.split("/")
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 f"https://api.frankfurter.app/{start_date}..{end_date}",
@@ -71,8 +97,10 @@ class ExternalResearcher:
 
     async def news_event(self, query: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         del context
-        start = date.fromisoformat(start_date).strftime("%Y%m%d000000")
-        end = date.fromisoformat(end_date).strftime("%Y%m%d235959")
+        query = self._validated_subject(query, "query")
+        start_day, end_day = self._validated_period(start_date, end_date)
+        start = start_day.strftime("%Y%m%d000000")
+        end = end_day.strftime("%Y%m%d235959")
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(
                 "https://api.gdeltproject.org/api/v2/doc/doc",
@@ -103,6 +131,8 @@ class ExternalResearcher:
         end_date: str,
         context: str,
     ) -> ExternalFinding:
+        if category not in {"weather", "economy_fx", "news_event"}:
+            raise ValueError("Unsupported external research category")
         if category == "weather":
             return await self.weather(subject, start_date, end_date, context)
         if category == "economy_fx":

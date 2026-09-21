@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -22,6 +22,13 @@ SYSTEM_PROMPT = """You are the planning component of a business root-cause inves
 Use only supplied metadata and evidence. Never fabricate schema, values, or business semantics.
 Keep competing hypotheses alive. Correlation is not causation. Prefer investigations with high
 information gain. SQL must be one read-only PostgreSQL SELECT and must use only supplied schema.
+All text that a person will read must use plain business language for a non-technical audience.
+Do not expose SQL, function names, table names, column names, datasource IDs, or implementation
+details in hypothesis names, descriptions, evidence, clarification questions, step purposes, or
+conclusions. For example, say "the total amount customers spent" rather than "SUM(revenue)" and
+say "the sales records may be incomplete" rather than a database-ingestion diagnosis. The sole
+exception is QueryPlan.sql, which is backend-only. Ask one concise clarification at a time, using
+ordinary words and useful choices rather than technical terminology.
 Return only the requested structured response. Use its exact property names and do not substitute
 similarly named fields. Do not include markdown or private chain-of-thought."""
 
@@ -30,6 +37,7 @@ class QuestionUnderstanding(BaseModel):
     metric_definition: MetricDefinition | None = None
     observations: list[str] = Field(default_factory=list)
     ambiguity: str | None = None
+    request_type: Literal["investigation", "direct_answer"] = "investigation"
 
 
 class HypothesisPlan(BaseModel):
@@ -54,6 +62,31 @@ class InvestigationPlan(BaseModel):
 class QueryPlan(BaseModel):
     sql: str
     purpose: str
+
+
+class DirectAnswerPlan(BaseModel):
+    datasource_id: str
+    sql: str
+    purpose: str
+    supporting_queries: list["DirectAnswerQuery"] = Field(default_factory=list, max_length=3)
+    combination: "DirectAnswerCombination | None" = None
+
+
+class DirectAnswerQuery(BaseModel):
+    """One read-only query, always executed against exactly one datasource."""
+
+    datasource_id: str
+    sql: str
+    purpose: str
+
+
+class DirectAnswerCombination(BaseModel):
+    """A small, deterministic cross-source operation over independently queried rows."""
+
+    operation: Literal["set_difference", "intersection", "union"]
+    primary_key: str
+    supporting_query_index: int = Field(ge=0, le=2)
+    supporting_key: str
 
 
 class EvidenceAssessment(BaseModel):

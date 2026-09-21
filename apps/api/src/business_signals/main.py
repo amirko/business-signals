@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel, Field
+from psycopg import AsyncConnection, sql
 from sse_starlette.sse import EventSourceResponse
 
 from business_signals.config import settings
 from business_signals.datasources.registry import DatasourceRegistry
+from business_signals.engine import InvestigationEngine
 from business_signals.models import (
     DatasourceCreate,
     DatasourceMetadata,
@@ -18,10 +22,27 @@ from business_signals.models import (
 )
 from business_signals.service import InvestigationService
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Attach the graph to the project PostgreSQL instance for restart-safe checkpoints."""
+    async with await AsyncConnection.connect(settings.checkpoint_database_url, autocommit=True) as connection:
+        await connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(settings.checkpoint_schema)))
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url, serde=InvestigationEngine.checkpoint_serde()
+    ) as checkpointer:
+        await checkpointer.conn.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(settings.checkpoint_schema))
+        )
+        await checkpointer.setup()
+        investigations.set_checkpointer(checkpointer)
+        yield
+
 app = FastAPI(
     title="Business Signals API",
     version="0.1.0",
     description="Evidence-backed, multi-datasource root-cause investigations.",
+    lifespan=lifespan,
 )
 local_web_origins = sorted({settings.web_origin, "http://localhost:3000", "http://localhost:5173"})
 app.add_middleware(
@@ -103,12 +124,35 @@ async def create_investigation(payload: InvestigationCreate) -> InvestigationSta
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/api/investigations", response_model=list[InvestigationState])
+async def list_investigations() -> list[InvestigationState]:
+    return investigations.list()
+
+
+@app.delete("/api/investigations", status_code=204)
+async def delete_all_investigations() -> None:
+    try:
+        await investigations.delete_all()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/investigations/{investigation_id}", response_model=InvestigationState)
 async def get_investigation(investigation_id: str) -> InvestigationState:
     try:
         return investigations.get(investigation_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/investigations/{investigation_id}", status_code=204)
+async def delete_investigation(investigation_id: str) -> None:
+    try:
+        await investigations.delete(investigation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/investigations/{investigation_id}/events")
@@ -133,6 +177,16 @@ async def stream_events(investigation_id: str, after: int = Query(default=0, ge=
 async def respond_to_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.respond(investigation_id, payload.response)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, status_code=202)
+async def follow_up_on_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
+    try:
+        return await investigations.follow_up(investigation_id, payload.response)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

@@ -157,6 +157,7 @@ class ExternalFinding(BaseModel):
 class HumanFeedback(BaseModel):
     question: str
     response: str
+    hypothesis_id: str | None = None
     received_at: datetime = Field(default_factory=now_utc)
 
 
@@ -199,12 +200,21 @@ class FinalAnalysis(BaseModel):
     external_findings: list[ExternalFinding]
     caveats: list[str]
     summary: str
+    follow_up_question: str | None = None
+
+
+class ConversationTurn(BaseModel):
+    question: str
+    answer: FinalAnalysis
+    created_at: datetime = Field(default_factory=now_utc)
 
 
 class InvestigationState(BaseModel):
     investigation_id: str
     question: str
     datasources: list[DatasourceSummary]
+    original_question: str | None = None
+    current_conversation_question: str | None = None
     limits: InvestigationLimits = Field(default_factory=InvestigationLimits)
     metric_definition: MetricDefinition | None = None
     observations: list[Observation] = Field(default_factory=list)
@@ -217,9 +227,11 @@ class InvestigationState(BaseModel):
     next_action: str | None = None
     external_request: dict[str, str] | None = None
     pending_step: InvestigationStep | None = None
+    request_type: Literal["investigation", "direct_answer"] = "investigation"
     pending_human_question: str | None = None
-    human_resume_node: Literal["generate_hypotheses", "select_investigation"] | None = None
+    human_resume_node: Literal["generate_hypotheses", "answer_directly", "select_investigation"] | None = None
     human_feedback: list[HumanFeedback] = Field(default_factory=list)
+    conversation_turns: list[ConversationTurn] = Field(default_factory=list)
     iteration: int = 0
     query_count: int = 0
     external_call_count: int = 0

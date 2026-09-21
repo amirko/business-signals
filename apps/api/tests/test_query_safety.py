@@ -6,6 +6,7 @@ from business_signals.datasources.safety import (
     validate_query_tables,
     validate_read_query,
 )
+from business_signals.external import ExternalResearcher
 
 
 @pytest.mark.parametrize(
@@ -15,6 +16,7 @@ from business_signals.datasources.safety import (
         "WITH gone AS (DELETE FROM events RETURNING *) SELECT * FROM gone",
         "DROP TABLE products",
         "SELECT * INTO backup FROM products",
+        "SELECT * FROM products FOR UPDATE",
         "SELECT 1; SELECT 2",
         "SELECT * FROM products -- bypass",
     ],
@@ -48,3 +50,15 @@ def test_recognizes_qualified_and_unqualified_metric_table_references() -> None:
     assert query_references_table("SELECT * FROM public.sales_events", "public.sales_events")
     assert query_references_table("SELECT * FROM sales_events", "public.sales_events")
     assert not query_references_table("SELECT * FROM inventory_history", "public.sales_events")
+
+
+def test_external_research_validates_bounded_dates_and_fixed_input_formats() -> None:
+    researcher = ExternalResearcher()
+
+    assert researcher._validated_period("2024-01-01", "2024-01-02")
+    with pytest.raises(ValueError, match="end date"):
+        researcher._validated_period("2024-02-01", "2024-01-01")
+    with pytest.raises(ValueError, match="ten years"):
+        researcher._validated_period("2010-01-01", "2024-01-01")
+    with pytest.raises(ValueError, match="ordinary characters"):
+        researcher._validated_subject("north\nitaly", "location")

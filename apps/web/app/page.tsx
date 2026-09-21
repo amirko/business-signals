@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  Activity, ArrowRight, ChevronDown, ChevronRight, CircleDot, Code2, Database, GitBranch,
+  Activity, Archive, ArrowLeft, ArrowRight, ChevronDown, ChevronRight, CircleDot, Code2, Database, GitBranch,
   HelpCircle, Layers3, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, X,
 } from 'lucide-react';
 import { Component, type ErrorInfo, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 
-type View = 'investigate' | 'sources' | 'architecture';
+type View = 'investigate' | 'sources' | 'saved' | 'architecture';
 type HypothesisStep = {
   id: string;
   type: string;
@@ -22,13 +22,36 @@ type HypothesisStep = {
 };
 type Hypothesis = { id: string; name: string; description: string; confidence: number; status: string };
 type Evidence = { id: string; description: string; relationship: string; confidence: number; hypothesis_ids: string[] };
-type FinalAnalysis = { likely_root_cause: string | null; confidence: number; summary: string; caveats: string[] };
+type FinalAnalysis = { likely_root_cause: string | null; confidence: number; summary: string; caveats: string[]; follow_up_question?: string | null };
 type InvestigationEvent = { id: string; type: string; message: string; data: Record<string, unknown> };
+type Clarification = { question: string; response?: string; hypothesisId?: string };
+type ConversationTurn = { question: string; answer: FinalAnalysis; created_at: string };
+type SavedInvestigation = {
+  investigation_id: string;
+  question: string;
+  original_question: string | null;
+  status: string;
+  request_type: 'investigation' | 'direct_answer';
+  started_at: string;
+  hypotheses: Hypothesis[];
+  evidence: Evidence[];
+  human_feedback: { question: string; response: string; hypothesis_id: string | null; received_at: string }[];
+  pending_human_question: string | null;
+  final_analysis: FinalAnalysis | null;
+  conversation_turns: { question: string; answer: FinalAnalysis; created_at: string }[];
+};
 type Datasource = { id: string; name: string; type: string; connected: boolean; table_count: number; schema_cached: boolean; discovered_at: string | null };
 type Column = { name: string; data_type: string; nullable: boolean; primary_key: boolean };
 type SchemaTable = { schema_name: string; name: string; columns: Column[]; foreign_keys: Record<string, string>[]; indexes: { name: string; definition: string }[]; approximate_rows: number | null; is_hypertable: boolean; time_column: string | null };
 type SchemaMetadata = { datasource_id: string; structural_metadata: SchemaTable[]; fingerprint: string; discovered_at: string };
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const investigationStepLabels: Record<string, string> = {
+  DatasourceSelected: 'Next check',
+  QueryStarted: 'Checking the data',
+  QueryRejected: 'Adjusting the check',
+  QueryCompleted: 'Check complete',
+  HypothesisUpdated: 'What we learned',
+};
 
 const defaultQuestion = 'Why did unit sales of Shell Jacket 001, Trail Backpack 006, Day Pack 011, and Rain Cover 016 in northern Italian stores fall after July 14, 2024?';
 
@@ -56,12 +79,25 @@ export default function Home() {
   const [question, setQuestion] = useState(defaultQuestion);
   const [datasources, setDatasources] = useState<Datasource[]>([]);
   const [sourceCount, setSourceCount] = useState(0);
+  const [savedRunCount, setSavedRunCount] = useState(0);
 
   useEffect(() => {
     fetch(`${apiUrl}/api/datasources`)
       .then((response) => response.ok ? response.json() as Promise<Datasource[]> : Promise.reject())
       .then((sources) => { setDatasources(sources); setSourceCount(sources.length); })
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const loadSavedRunCount = () => {
+      fetch(`${apiUrl}/api/investigations`)
+        .then((response) => response.ok ? response.json() as Promise<SavedInvestigation[]> : Promise.reject())
+        .then((saved) => setSavedRunCount(saved.length))
+        .catch(() => undefined);
+    };
+    loadSavedRunCount();
+    const refreshTimer = window.setInterval(loadSavedRunCount, 5000);
+    return () => window.clearInterval(refreshTimer);
   }, []);
 
   return (
@@ -83,6 +119,7 @@ export default function Home() {
           <nav aria-label="Primary navigation">
             <NavItem active={view === 'investigate'} icon={<Search />} label="Investigate" onClick={() => setView('investigate')} />
             <NavItem active={view === 'sources'} icon={<Database />} label="Data sources" count={sourceCount} onClick={() => setView('sources')} />
+            <NavItem active={view === 'saved'} icon={<Archive />} label="Saved items" count={savedRunCount} onClick={() => setView('saved')} />
             <NavItem active={view === 'architecture'} icon={<Layers3 />} label="How it works" onClick={() => setView('architecture')} />
           </nav>
           <div className="sidebar-note">
@@ -94,6 +131,7 @@ export default function Home() {
         <main className="main-content">
           {view === 'investigate' && <InvestigationView question={question} setQuestion={setQuestion} datasources={datasources} />}
           {view === 'sources' && <SourcesView onSourceCount={setSourceCount} onSourcesChanged={setDatasources} />}
+          {view === 'saved' && <SavedInvestigationsView onSavedRunCount={setSavedRunCount} />}
           {view === 'architecture' && <ArchitectureView />}
         </main>
       </div>
@@ -111,9 +149,14 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [hypothesisSteps, setHypothesisSteps] = useState<Record<string, HypothesisStep[]>>({});
   const [expandedHypotheses, setExpandedHypotheses] = useState<Record<string, boolean>>({});
+  const [activeHypothesisId, setActiveHypothesisId] = useState<string | null>(null);
   const [finalAnalysis, setFinalAnalysis] = useState<FinalAnalysis | null>(null);
+  const [conversationTurns, setConversationTurns] = useState<ConversationTurn[]>([]);
+  const [investigationId, setInvestigationId] = useState<string | null>(null);
+  const [followUpResponse, setFollowUpResponse] = useState('');
   const [clarificationQuestion, setClarificationQuestion] = useState<string | null>(null);
   const [clarificationResponse, setClarificationResponse] = useState('');
+  const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [error, setError] = useState('');
   const [running, setRunning] = useState(false);
   const stream = useRef<EventSource | null>(null);
@@ -140,32 +183,62 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
         ? current.map((item) => item.id === hypothesis.id ? hypothesis : item)
         : [...current, hypothesis]);
       if (event.type === 'HypothesisUpdated') addHypothesisStep(hypothesis.id, event);
+      if (event.type === 'HypothesisUpdated') setActiveHypothesisId((current) => current === hypothesis.id ? null : current);
     }
     const hypothesisId = typeof event.data.hypothesis_id === 'string' ? event.data.hypothesis_id : undefined;
-    if (hypothesisId && ['DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted'].includes(event.type)) addHypothesisStep(hypothesisId, event);
+    if (hypothesisId && ['DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted'].includes(event.type)) {
+      addHypothesisStep(hypothesisId, event);
+      if (event.type === 'DatasourceSelected' || event.type === 'QueryStarted' || event.type === 'QueryRejected') setActiveHypothesisId(hypothesisId);
+    }
     if (event.type === 'EvidenceFound' && event.data.evidence) {
       const found = event.data.evidence as Evidence;
       setEvidence((current) => [...current.filter((item) => item.id !== found.id), found]);
     }
     if (event.type === 'HumanInputRequested') {
+      const hypothesisId = typeof event.data.hypothesis_id === 'string' ? event.data.hypothesis_id : undefined;
       setClarificationQuestion(event.message); setClarificationResponse(''); setRunning(false);
+      setClarifications((current) => current.some((item) => item.question === event.message)
+        ? current
+        : [...current, { question: event.message, hypothesisId }]);
     }
     if (event.type === 'HumanInputReceived') {
-      setClarificationQuestion(null); setRunning(true);
+      setRunning(true);
     }
     if (event.type === 'InvestigationCompleted') {
       setFinalAnalysis(event.data.final_analysis as FinalAnalysis);
-      setRunning(false); stream.current?.close(); stream.current = null;
+      if (Array.isArray(event.data.conversation_turns)) setConversationTurns(event.data.conversation_turns as ConversationTurn[]);
+      setRunning(false); setActiveHypothesisId(null); stream.current?.close(); stream.current = null;
     }
     if (event.type === 'InvestigationFailed') {
       setError(event.message);
-      setRunning(false); stream.current?.close(); stream.current = null;
+      setRunning(false); setActiveHypothesisId(null); stream.current?.close(); stream.current = null;
     }
+  };
+
+  const openInvestigationStream = (id: string) => {
+    stream.current?.close();
+    const eventSource = new EventSource(`${apiUrl}/api/investigations/${id}/events`);
+    stream.current = eventSource;
+    const processEvent = (message: Event) => {
+      try {
+        handleEvent(JSON.parse((message as MessageEvent).data) as InvestigationEvent);
+      } catch (cause) {
+        console.error('Could not process investigation event', cause, message);
+        setError('An investigation update could not be displayed. Check the browser console and backend logs.');
+        setRunning(false); eventSource.close(); stream.current = null;
+      }
+    };
+    ['InvestigationStarted', 'HypothesisCreated', 'DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted', 'EvidenceFound', 'HypothesisUpdated', 'HumanInputRequested', 'HumanInputReceived', 'InvestigationCompleted', 'InvestigationFailed'].forEach((type) => eventSource.addEventListener(type, processEvent));
+    eventSource.onerror = () => {
+      if (stream.current === eventSource) {
+        setError('The live investigation stream disconnected.'); setRunning(false); eventSource.close(); stream.current = null;
+      }
+    };
   };
 
   const startInvestigation = async () => {
     if (selectedDatasourceIds.length === 0) { setError('Choose at least one connected datasource first.'); return; }
-    setError(''); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setExpandedHypotheses({}); setFinalAnalysis(null); setClarificationQuestion(null); setClarificationResponse(''); setRunning(true); stream.current?.close();
+    setError(''); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setConversationTurns([]); setInvestigationId(null); setFollowUpResponse(''); setClarificationQuestion(null); setClarificationResponse(''); setClarifications([]); setRunning(true); stream.current?.close();
     try {
       const response = await fetch(`${apiUrl}/api/investigations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, datasource_ids: selectedDatasourceIds }) });
       if (!response.ok) {
@@ -174,19 +247,8 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
           : 'The investigation could not be started. Check the datasource connection and backend logs.');
       }
       const created = await response.json() as { investigation_id: string };
-      const eventSource = new EventSource(`${apiUrl}/api/investigations/${created.investigation_id}/events`);
-      stream.current = eventSource;
-      const processEvent = (message: Event) => {
-        try {
-          handleEvent(JSON.parse((message as MessageEvent).data) as InvestigationEvent);
-        } catch (cause) {
-          console.error('Could not process investigation event', cause, message);
-          setError('An investigation update could not be displayed. Check the browser console and backend logs.');
-          setRunning(false); eventSource.close(); stream.current = null;
-        }
-      };
-      ['InvestigationStarted', 'HypothesisCreated', 'DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted', 'EvidenceFound', 'HypothesisUpdated', 'HumanInputRequested', 'HumanInputReceived', 'InvestigationCompleted', 'InvestigationFailed'].forEach((type) => eventSource.addEventListener(type, processEvent));
-      eventSource.onerror = () => { if (stream.current === eventSource) { setError('The live investigation stream disconnected.'); setRunning(false); eventSource.close(); stream.current = null; } };
+      setInvestigationId(created.investigation_id);
+      openInvestigationStream(created.investigation_id);
     } catch (cause) { console.error('Could not start investigation', cause); setError('The investigation could not be started. Check the backend logs and try again.'); setRunning(false); }
   };
 
@@ -200,11 +262,52 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ response: clarificationResponse.trim() }),
       });
       if (!response.ok) throw new Error(`Clarification request failed with ${response.status}`);
+      const answeredQuestion = clarificationQuestion;
+      const answer = clarificationResponse.trim();
+      setClarifications((current) => current.map((item) => item.question === answeredQuestion && !item.response
+        ? { ...item, response: answer }
+        : item));
       setClarificationQuestion(null); setClarificationResponse(''); setRunning(true);
     } catch (cause) {
       console.error('Could not submit clarification', cause);
       setError('The clarification could not be submitted. Check the backend logs and try again.');
     }
+  };
+
+  const submitFollowUp = async (response: string) => {
+    if (!investigationId || !response.trim()) return;
+    try {
+      const request = await fetch(`${apiUrl}/api/investigations/${investigationId}/follow-up`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ response: response.trim() }),
+      });
+      if (!request.ok) throw new Error(`Follow-up request failed with ${request.status}`);
+      const updated = await request.json() as { status: string; final_analysis: FinalAnalysis | null };
+      setFollowUpResponse('');
+      if (updated.status === 'completed') {
+        setFinalAnalysis(updated.final_analysis);
+        return;
+      }
+      setError(''); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setClarificationQuestion(null); setClarificationResponse(''); setClarifications([]); setRunning(true);
+      openInvestigationStream(investigationId);
+    } catch (cause) {
+      console.error('Could not request more detail', cause);
+      setError('More detail could not be requested. Check the backend logs and try again.');
+    }
+  };
+
+  const renderClarification = (item: Clarification, index: number) => {
+    const awaitingAnswer = clarificationQuestion === item.question && !item.response;
+    const questionNumber = clarifications.indexOf(item) + 1;
+    return <article className="clarification-at-stage" key={`${item.question}-${index}`}>
+      <span>Q{questionNumber}</span>
+      <div>
+        <small>{awaitingAnswer ? 'CLARIFICATION NEEDED' : 'CLARIFICATION'}</small>
+        <p>{item.question}</p>
+        {awaitingAnswer
+          ? <form onSubmit={submitClarification}><Textarea value={clarificationResponse} onChange={(event) => setClarificationResponse(event.target.value)} placeholder="Provide the business context the investigation needs…" rows={3} /><div><span>The investigation is paused until you respond.</span><Button type="submit" disabled={!clarificationResponse.trim()}>Resume investigation <ArrowRight /></Button></div></form>
+          : item.response ? <><small>YOUR ANSWER</small><p className="clarification-answer">{item.response}</p></> : <small className="clarification-pending">AWAITING YOUR ANSWER</small>}
+      </div>
+    </article>;
   };
 
   const toggleDatasource = (id: string) => setSelectedDatasourceIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -226,6 +329,7 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
             </Button>
           </div>
         </div>
+        {clarifications.some((item) => !item.hypothesisId) && <section className="clarification-stage initial-clarifications"><span className="section-kicker">SCOPE CLARIFICATION</span><h2>Before forming hypotheses</h2>{clarifications.filter((item) => !item.hypothesisId).map(renderClarification)}</section>}
 
         <div className="timeline-heading">
           <div><h2>Hypothesis investigation tree</h2><span>{running ? 'The graph is evaluating live evidence' : finalAnalysis ? 'Investigation complete' : 'Ready'}</span></div>
@@ -240,11 +344,13 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
             const tone = hypothesis.status === 'rejected' ? 'bad' : hypothesis.status === 'supported' || hypothesis.status === 'confirmed' ? 'good' : 'muted';
             return <details className="hypothesis-tree" key={hypothesis.id} open={expandedHypotheses[hypothesis.id] ?? true} onToggle={(event) => { const isOpen = event.currentTarget.open; setExpandedHypotheses((current) => ({ ...current, [hypothesis.id]: isOpen })); }}>
               <summary>
-                <code>{hypothesisLabel}</code><strong>{hypothesis.name}</strong><span className={tone}>{hypothesis.status}</span><span className="tree-confidence">{Math.round(hypothesis.confidence * 100)}%</span><ChevronDown />
+                <code>{hypothesisLabel}</code><strong>{hypothesis.name}</strong>{activeHypothesisId === hypothesis.id && <span className="hypothesis-working"><RefreshCw className="spin" /> Checking</span>}<span className={tone}>{hypothesis.status}</span><span className="tree-confidence">{Math.round(hypothesis.confidence * 100)}%</span><ChevronDown />
               </summary>
               <div className="tree-children">
                 <p className="hypothesis-description">{hypothesis.description}</p>
-                {steps.map((step) => <article className="hypothesis-step" key={step.id}><span>{step.type.replaceAll(/([A-Z])/g, ' $1').trim()}</span><p>{step.message}</p>{step.source && <small>{step.source}</small>}</article>)}
+                {activeHypothesisId === hypothesis.id && <div className="hypothesis-working-detail"><RefreshCw className="spin" /><span>Checking the next piece of evidence…</span></div>}
+                {steps.map((step) => <article className="hypothesis-step" key={step.id}><span>{investigationStepLabels[step.type] ?? step.type.replaceAll(/([A-Z])/g, ' $1').trim()}</span><p>{step.message}</p>{step.source && <small>{step.source}</small>}</article>)}
+                {clarifications.filter((item) => item.hypothesisId === hypothesis.id).map(renderClarification)}
                 {relatedEvidence.map((item) => {
                   const evidenceLabel = `E${evidence.findIndex((candidate) => candidate.id === item.id) + 1}`;
                   return <article className="hypothesis-evidence" key={item.id}><code>{evidenceLabel}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>;
@@ -256,9 +362,9 @@ function InvestigationView({ question, setQuestion, datasources }: { question: s
           {!running && hypotheses.length === 0 && <div className="empty-timeline">Start an investigation to build a hypothesis tree.</div>}
           {running && <div className="thinking-row"><span className="thinking-icon"><Activity /></span><div><strong>Waiting for the next graph decision…</strong><span>The engine is selecting the most informative internal step.</span></div></div>}
         </div>
-        {clarificationQuestion && <form className="clarification-panel" onSubmit={submitClarification}><span className="section-kicker">CLARIFICATION NEEDED</span><h2>Before continuing</h2><p>{clarificationQuestion}</p><Textarea value={clarificationResponse} onChange={(event) => setClarificationResponse(event.target.value)} placeholder="Provide the business context the investigation needs…" rows={3} /><div><span>The investigation is paused until you respond.</span><Button type="submit" disabled={!clarificationResponse.trim()}>Resume investigation <ArrowRight /></Button></div></form>}
         {error && <output className="notice investigation-error">{error}</output>}
-        {finalAnalysis && <article className="final-result"><span className="section-kicker">FINAL ANALYSIS</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><p>{finalAnalysis.summary}</p><span className="source-chip">{Math.round(finalAnalysis.confidence * 100)}% confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}</article>}
+        {conversationTurns.slice(0, finalAnalysis ? -1 : undefined).map((turn, index) => <article className="prior-answer" key={`${turn.created_at}-${index}`}><span className="section-kicker">EARLIER ANSWER</span><h2>{turn.question}</h2><p>{turn.answer.summary}</p></article>)}
+        {finalAnalysis && <article className="final-result"><span className="section-kicker">FINAL ANALYSIS</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><p>{finalAnalysis.summary}</p><span className="source-chip">{Math.round(finalAnalysis.confidence * 100)}% confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}{finalAnalysis.follow_up_question && <div className="follow-up-prompt"><p>{finalAnalysis.follow_up_question}</p><form onSubmit={(event) => { event.preventDefault(); void submitFollowUp(followUpResponse); }}><Textarea value={followUpResponse} onChange={(event) => setFollowUpResponse(event.target.value)} placeholder="Ask for a different detail…" rows={2} /><div><Button type="button" onClick={() => void submitFollowUp('Yes')}>Yes, show me <ArrowRight /></Button><Button type="submit" disabled={!followUpResponse.trim()}>Ask something else</Button><Button type="button" variant="outline" onClick={() => void submitFollowUp('No thanks')}>No, I’m done</Button></div></form></div>}</article>}
       </section>
 
       <aside className="hypothesis-panel">
@@ -417,6 +523,131 @@ function SourcesView({ onSourceCount, onSourcesChanged }: { onSourceCount: (coun
       </Sheet>
     </section>
   );
+}
+
+function SavedInvestigationsView({ onSavedRunCount }: { onSavedRunCount: (count: number) => void }) {
+  const [investigations, setInvestigations] = useState<SavedInvestigation[]>([]);
+  const [selected, setSelected] = useState<SavedInvestigation | null>(null);
+  const [notice, setNotice] = useState('');
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeResponse, setResumeResponse] = useState('');
+  const [resuming, setResuming] = useState(false);
+
+  const loadInvestigations = async () => {
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations`);
+      if (!response.ok) throw new Error(`List request failed with ${response.status}`);
+      const saved = await response.json() as SavedInvestigation[];
+      setInvestigations(saved);
+      onSavedRunCount(saved.length);
+      setSelected((current) => current ? saved.find((item) => item.investigation_id === current.investigation_id) ?? null : null);
+    } catch (cause) {
+      console.error('Could not load saved investigations', cause);
+      setNotice('Saved investigations could not be loaded. Check the backend logs and try again.');
+    }
+  };
+
+  useEffect(() => {
+    void loadInvestigations();
+    const refreshTimer = window.setInterval(() => { void loadInvestigations(); }, 5000);
+    return () => window.clearInterval(refreshTimer);
+  }, []);
+
+  const deleteOne = async (investigation: SavedInvestigation) => {
+    if (!window.confirm(`Delete this saved investigation?\n\n${investigation.question}`)) return;
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations/${investigation.investigation_id}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(`Delete request failed with ${response.status}`);
+      setInvestigations((current) => current.filter((item) => item.investigation_id !== investigation.investigation_id));
+      onSavedRunCount(Math.max(0, investigations.length - 1));
+      setSelected((current) => current?.investigation_id === investigation.investigation_id ? null : current);
+      setNotice('Saved investigation deleted.');
+    } catch (cause) {
+      console.error('Could not delete saved investigation', cause);
+      setNotice('The saved investigation could not be deleted. A running investigation must finish first.');
+    }
+  };
+
+  const deleteAll = async () => {
+    if (!window.confirm('Delete every saved investigation? This cannot be undone.')) return;
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations`, { method: 'DELETE' });
+      if (!response.ok) throw new Error(`Delete-all request failed with ${response.status}`);
+      setInvestigations([]); onSavedRunCount(0); setSelected(null); setNotice('All saved investigations were deleted.');
+    } catch (cause) {
+      console.error('Could not delete saved investigations', cause);
+      setNotice('Saved investigations could not be deleted. A running investigation must finish first.');
+    }
+  };
+
+  const originalConversationQuestion = (investigation: SavedInvestigation) => {
+    if (investigation.original_question) return investigation.original_question;
+    return investigation.question.split('\n\nEarlier answer context: ').at(-1) || investigation.question;
+  };
+  const conversationTitle = selected ? originalConversationQuestion(selected) : '';
+  const isResumable = (investigation: SavedInvestigation) => (
+    investigation.status === 'waiting_for_human'
+    || ['completed', 'insufficient_evidence', 'failed'].includes(investigation.status)
+  );
+  const canResume = selected ? isResumable(selected) : false;
+  const openResume = (investigation: SavedInvestigation) => {
+    setSelected(investigation);
+    setResumeResponse('');
+    setResumeOpen(true);
+  };
+
+  const resumeConversation = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selected || !resumeResponse.trim()) return;
+    const isClarification = selected.status === 'waiting_for_human';
+    setResuming(true);
+    try {
+      const response = await fetch(
+        `${apiUrl}/api/investigations/${selected.investigation_id}/${isClarification ? 'responses' : 'follow-up'}`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ response: resumeResponse.trim() }) },
+      );
+      if (!response.ok) throw new Error(`Resume request failed with ${response.status}`);
+      const resumed = await response.json() as SavedInvestigation;
+      setSelected(resumed); setResumeResponse(''); setResumeOpen(false);
+      setNotice(isClarification ? 'Clarification submitted; the conversation resumed.' : 'Conversation resumed with your new request.');
+    } catch (cause) {
+      console.error('Could not resume saved conversation', cause);
+      setNotice('The conversation could not be resumed. Check the backend logs and try again.');
+    } finally {
+      setResuming(false);
+    }
+  };
+
+  if (selected) return <section className="standard-page saved-conversation-screen">
+    <div className="conversation-topbar"><Button variant="outline" onClick={() => { setSelected(null); setResumeOpen(false); }}><ArrowLeft /> Back to saved items</Button></div>
+    <article className="saved-conversation">
+      <div className="saved-detail-header"><div><span className="section-kicker">SAVED CONVERSATION</span><h1>{conversationTitle}</h1><p className="opened-conversation-id">Conversation ID <code>{selected.investigation_id}</code></p></div><div className="saved-conversation-actions">{canResume && <Button variant="outline" onClick={() => setResumeOpen((current) => !current)}><Play /> Resume conversation</Button>}<Button variant="destructive" size="sm" onClick={() => void deleteOne(selected)}><Trash2 /> Delete</Button></div></div>
+      {notice && <output className="notice">{notice}</output>}
+      {resumeOpen && <section className="resume-conversation"><h3>{selected.status === 'waiting_for_human' ? selected.pending_human_question ?? 'Provide the requested clarification.' : selected.final_analysis?.follow_up_question ?? 'What would you like to explore next?'}</h3><form onSubmit={resumeConversation}><Textarea value={resumeResponse} onChange={(event) => setResumeResponse(event.target.value)} placeholder={selected.status === 'waiting_for_human' ? 'Your clarification…' : 'Ask for more detail…'} rows={3} /><div><Button type="submit" disabled={resuming || !resumeResponse.trim()}>{resuming ? 'Resuming…' : 'Continue conversation'} <ArrowRight /></Button><Button type="button" variant="outline" onClick={() => setResumeOpen(false)} disabled={resuming}>Cancel</Button></div></form></section>}
+      {selected.status === 'running' && <div className="thinking-row"><span className="thinking-icon"><Activity /></span><div><strong>Conversation is continuing…</strong><span>The next answer will appear here automatically.</span></div></div>}
+      {selected.conversation_turns.length > 0 && <section><h3>Conversation</h3>{selected.conversation_turns.map((turn, index) => <article className="conversation-turn" key={`${turn.created_at}-${index}`}><small>QUESTION</small><p>{turn.question}</p><small>ANSWER</small><h2>{turn.answer.likely_root_cause ?? 'Direct answer'}</h2><p>{turn.answer.summary}</p>{turn.answer.caveats.map((caveat) => <p className="saved-caveat" key={caveat}>{caveat}</p>)}</article>)}</section>}
+      {selected.human_feedback.length > 0 && <section><h3>Follow-up requests and answers</h3>{selected.human_feedback.map((item, index) => <article className="saved-detail-item" key={`${item.question}-${index}`}><code>Q{index + 1}</code><div><small>FOLLOW-UP REQUEST</small><p>{item.question}</p><small>YOUR ANSWER</small><p className="saved-answer">{item.response}</p></div></article>)}</section>}
+      {selected.conversation_turns.length === 0 && <>{(selected.human_feedback.length > 0 || selected.pending_human_question) && <section><h3>Clarifications</h3>{selected.human_feedback.map((item, index) => <article className="saved-detail-item" key={`${item.question}-${index}`}><code>Q{index + 1}</code><div><p>{item.question}</p><small>YOUR ANSWER</small><p className="saved-answer">{item.response}</p></div></article>)}{selected.pending_human_question && <article className="saved-detail-item"><code>Q{selected.human_feedback.length + 1}</code><div><p>{selected.pending_human_question}</p><small>AWAITING ANSWER</small></div></article>}</section>}</>}
+      <section><h3>Hypotheses</h3>{selected.hypotheses.map((hypothesis, index) => <article className="saved-detail-item" key={hypothesis.id}><code>H{index + 1}</code><div><strong>{hypothesis.name}</strong><span>{hypothesis.status} · {Math.round(hypothesis.confidence * 100)}%</span><p>{hypothesis.description}</p></div></article>)}</section>
+      <section><h3>Evidence</h3>{selected.evidence.map((item, index) => <article className="saved-detail-item" key={item.id}><code>E{index + 1}</code><div><span>{item.relationship} · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}{selected.evidence.length === 0 && <p className="saved-empty">No separate evidence was saved for this conversation.</p>}</section>
+      {selected.conversation_turns.length === 0 && selected.final_analysis && <section className="saved-conclusion"><h3>Conclusion</h3><h4>{selected.final_analysis.likely_root_cause ?? 'Insufficient evidence'}</h4><p>{selected.final_analysis.summary}</p><span>{Math.round(selected.final_analysis.confidence * 100)}% confidence</span>{selected.final_analysis.caveats.map((caveat) => <p className="saved-caveat" key={caveat}>{caveat}</p>)}</section>}
+    </article>
+  </section>;
+
+  return <section className="standard-page saved-investigations-page">
+    <div className="page-heading">
+      <div><span className="section-kicker">LOCAL ARCHIVE</span><h1>Saved investigations</h1><p>Questions, clarifications, hypotheses, evidence, and conclusions are saved locally.</p></div>
+      <div className="archive-actions"><Button variant="outline" onClick={() => void loadInvestigations()}><RefreshCw /> Refresh</Button><Button variant="destructive" onClick={() => void deleteAll()} disabled={investigations.length === 0}><Trash2 /> Delete all</Button></div>
+    </div>
+    {notice && <output className="notice">{notice}</output>}
+    {investigations.length === 0 && <div className="empty-sources"><Archive /><strong>No saved investigations</strong><span>Completed and paused work will appear here.</span></div>}
+    <div className="saved-run-list">
+      {investigations.map((investigation) => <article key={investigation.investigation_id} className="saved-run">
+        <div><span className="saved-run-status">{investigation.status.replaceAll('_', ' ')}</span><h2>{originalConversationQuestion(investigation)}</h2><small>{new Date(investigation.started_at).toLocaleString()}</small><code className="saved-list-uid">UID: {investigation.investigation_id}</code><p>{investigation.hypotheses.length} hypotheses · {investigation.evidence.length} evidence items · {investigation.human_feedback.length} follow-ups</p></div>
+        <div className="saved-run-actions"><Button variant="outline" onClick={() => setSelected(investigation)}>View</Button>{isResumable(investigation) && <Button variant="outline" onClick={() => openResume(investigation)}><Play /> Resume</Button>}<Button variant="destructive" size="icon" onClick={() => void deleteOne(investigation)} aria-label={`Delete investigation: ${investigation.question}`}><Trash2 /></Button></div>
+      </article>)}
+    </div>
+  </section>;
 }
 
 function ArchitectureView() {

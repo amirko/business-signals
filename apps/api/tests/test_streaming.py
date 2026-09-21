@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,8 +39,10 @@ class FailingGraph:
 
 
 @pytest.mark.asyncio
-async def test_investigation_failure_is_logged_but_not_sent_to_client(caplog: pytest.LogCaptureFixture) -> None:
-    service = InvestigationService(DatasourceRegistry())
+async def test_investigation_failure_is_logged_but_not_sent_to_client(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
+    service = InvestigationService(DatasourceRegistry(), archive_dir=tmp_path / "investigations")
     state = InvestigationState(
         investigation_id="inv_failure",
         question="Why did revenue decline?",

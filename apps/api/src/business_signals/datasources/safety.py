@@ -45,6 +45,8 @@ def validate_read_query(sql: str, max_rows: int = 500) -> str:
         raise UnsafeQueryError("Query must be SELECT or WITH ... SELECT")
     if statement.find(exp.Into) is not None:
         raise UnsafeQueryError("SELECT INTO is not allowed")
+    if statement.args.get("locks"):
+        raise UnsafeQueryError("Locking reads are not allowed")
 
     limit = statement.args.get("limit")
     if limit is None:

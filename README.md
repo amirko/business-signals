@@ -98,7 +98,10 @@ POST /api/datasources/{id}/refresh
 DELETE /api/datasources/{id}
 
 POST /api/investigations
+GET  /api/investigations                 # local saved-run archive
+DELETE /api/investigations              # delete all saved runs (when none are running)
 GET  /api/investigations/{id}
+DELETE /api/investigations/{id}
 GET  /api/investigations/{id}/events       # SSE
 POST /api/investigations/{id}/responses    # resume HITL interrupt
 ```
@@ -148,7 +151,7 @@ npm --prefix apps/web run build
 
 ## Current scope
 
-Datasource registrations and their schema cache survive local API restarts; investigation records remain in memory. It implements PostgreSQL and TimescaleDB only, relies on live public services for optional external research, and expects an OpenAI-compatible model capable of reliable structured JSON. Durable encrypted credentials, organization authentication, additional adapters, and production-grade distributed checkpoint storage are follow-on work.
+Datasource registrations and their schema cache survive local API restarts. Investigation records are archived locally under `.business-signals/investigations/` (or `INVESTIGATION_STORE_DIR`), with their question, human clarifications, hypotheses, evidence, and final analysis. LangGraph checkpoints are stored separately in the catalog PostgreSQL database, under the `business_signals` schema by default (`CHECKPOINT_DATABASE_URL` and `CHECKPOINT_SCHEMA`). This preserves the exact graph position and pending interrupt, so a paused clarification can resume after an API restart without repeating earlier steps. The Saved runs view can inspect or delete one archived run or all non-running runs. It implements PostgreSQL and TimescaleDB only, relies on live public services for optional external research, and expects an OpenAI-compatible model capable of reliable structured JSON. Durable encrypted credentials, organization authentication, and additional adapters are follow-on work.
 
 ## License
 
