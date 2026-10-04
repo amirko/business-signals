@@ -22,6 +22,11 @@ _FORBIDDEN = {
     exp.Update,
 }
 
+# The lookup result is application data rather than a user-facing query result.
+# A stable neutral alias means traversal never relies on another datasource's
+# table or column spelling.
+CROSS_DATASOURCE_LOOKUP_KEY = "relationship_key"
+
 
 def validate_read_query(sql: str, max_rows: int = 500) -> str:
     """Return a normalized, row-limited SELECT or raise before touching a database."""
@@ -29,6 +34,12 @@ def validate_read_query(sql: str, max_rows: int = 500) -> str:
         raise UnsafeQueryError("Query cannot be empty")
     if re.search(r"--|/\*|\*/", sql):
         raise UnsafeQueryError("SQL comments are not allowed")
+    # SQLAlchemy's PostgreSQL pyformat dialect reserves this syntax for bound
+    # parameters. Generated SQL must use ordinary PostgreSQL expressions, not
+    # DB-API interpolation tokens; otherwise compilation can raise a raw
+    # KeyError before the database sees the read-only query.
+    if re.search(r"%\([A-Za-z_][A-Za-z0-9_]*\)[A-Za-z]", sql):
+        raise UnsafeQueryError("DB-API percent-style parameters are not allowed in SQL")
 
     try:
         statements = sqlglot.parse(sql, read="postgres")
@@ -73,6 +84,14 @@ def validate_query_tables(sql: str, allowed_tables: set[str]) -> str:
         table_name = table.name
         if table_name in cte_names:
             continue
+        # PostgreSQL accepts ``catalog.schema.table`` syntactically, but the
+        # datasource ID is not a PostgreSQL catalog.  Treating it as though it
+        # were a schema used to let a generated query bypass this guardrail and
+        # fail at execution with a misleading cross-database error.
+        if table.catalog:
+            raise UnsafeQueryError(
+                "Query must use schema.table names only; datasource IDs cannot appear in SQL"
+            )
         qualified_name = f"{table.db}.{table_name}" if table.db else table_name
         if qualified_name not in allowed_tables and table_name not in allowed_unqualified:
             raise UnsafeQueryError(f"Query references a table outside the selected datasource: {qualified_name}")
@@ -84,3 +103,54 @@ def query_references_table(sql: str, table_name: str) -> bool:
     statement = sqlglot.parse_one(sql, read="postgres")
     bare_name = table_name.rsplit(".", 1)[-1]
     return any(table.name == bare_name for table in statement.find_all(exp.Table))
+
+
+def validate_cross_datasource_lookup_projection(
+    sql: str,
+    projection_name: str = CROSS_DATASOURCE_LOOKUP_KEY,
+    relationship_field: str | None = None,
+) -> None:
+    """Require one lookup to return one approved relationship key.
+
+    A cross-datasource lookup is deliberately not a general-purpose query. Its
+    only job is to retrieve values for one approved relationship, which the
+    application then binds as a filter in the primary datasource.
+    """
+    try:
+        statement = sqlglot.parse_one(sql, read="postgres")
+    except sqlglot.errors.ParseError as exc:
+        raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
+
+    if isinstance(statement, exp.Union):
+        raise UnsafeQueryError(
+            "Each cross-datasource lookup must serve one approved relationship; "
+            "do not combine different keys with UNION"
+        )
+    if not isinstance(statement, exp.Select) or len(statement.expressions) != 1:
+        raise UnsafeQueryError(
+            "Cross-datasource lookup must return exactly one approved relationship field"
+        )
+    if statement.expressions[0].alias_or_name != projection_name:
+        raise UnsafeQueryError(
+            "Cross-datasource lookup must return its one approved relationship key "
+            f"as {projection_name!r}"
+        )
+    if relationship_field is None:
+        return
+
+    relationship_table, relationship_column = relationship_field.rsplit(".", 1)
+    projected = statement.expressions[0]
+    expression = projected.this if isinstance(projected, exp.Alias) else projected
+    if not isinstance(expression, exp.Column) or expression.name != relationship_column:
+        raise UnsafeQueryError("Cross-datasource lookup must project the approved relationship field")
+    matching_tables = [
+        table
+        for table in statement.find_all(exp.Table)
+        if (f"{table.db}.{table.name}" if table.db else table.name) == relationship_table
+    ]
+    if not matching_tables:
+        raise UnsafeQueryError("Cross-datasource lookup must read the approved relationship table")
+    if expression.table and expression.table not in {table.alias_or_name for table in matching_tables}:
+        raise UnsafeQueryError("Cross-datasource lookup projects a key from the wrong table")
+    if not expression.table and len(list(statement.find_all(exp.Table))) != 1:
+        raise UnsafeQueryError("Cross-datasource lookup must qualify the approved relationship field")

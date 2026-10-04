@@ -58,7 +58,7 @@ pyproject.toml         Python 3.12 package and test configuration
 
 ## Quick start
 
-Requirements: Python 3.12+, Node 22.13+, Docker, and an OpenAI-compatible API key.
+Requirements: Python 3.12+, Node 22.13+, Docker, and an API key for a supported AI provider.
 
 ```bash
 cp .env.example .env
@@ -69,7 +69,82 @@ npm --prefix apps/web install
 docker compose up -d --wait
 ```
 
+### AI provider
+
+Set `AI_PROVIDER` in `.env` to select the model backend. The engine always uses the same
+structured-output interface, so changing providers does not change graph behavior or safety rules.
+
+```bash
+# OpenAI (default)
+AI_PROVIDER=openai
+AI_API_KEY=...
+AI_MODEL=gpt-5-mini
+
+# Anthropic's native Messages API
+AI_PROVIDER=anthropic
+AI_API_KEY=...
+AI_MODEL=claude-sonnet-4-5
+
+# Any OpenAI-compatible endpoint (for example OpenRouter, Groq, or a compatible Gemini endpoint)
+AI_PROVIDER=openai_compatible
+AI_API_KEY=...
+AI_MODEL=provider-model-name
+AI_BASE_URL=https://provider.example/v1
+```
+
+`AI_BASE_URL` is needed only for an OpenAI-compatible provider; OpenAI and Anthropic have their
+own built-in endpoints. Restart the API after changing any provider setting. Provider credentials
+stay local in `.env` and are never added to graph state,
+API responses, events, or logs.
+
+### Investigation limits
+
+Investigation budgets are deployment settings, configured in `.env` rather than by client requests:
+
+```bash
+INVESTIGATION_MAX_ITERATIONS=8
+INVESTIGATION_MAX_SQL_QUERIES=12
+INVESTIGATION_MAX_EXTERNAL_CALLS=2
+INVESTIGATION_MAX_DURATION_SECONDS=180
+IGNORE_INVESTIGATION_LIMITS=false
+```
+
+Set `IGNORE_INVESTIGATION_LIMITS=true` to disable these stopping budgets for a deliberately
+unbounded investigation. Read-only SQL validation and `MAX_QUERY_ROWS` still apply.
+
+### Geographic weather coverage
+
+Weather for a city or other known point first resolves its coordinates through Open-Meteo
+geocoding. It rejects a bare ambiguous city rather than accepting the first search result. For a
+country or region, it resolves a boundary polygon, generates polygon-clipped sample points at the
+configured geographic density, then splits those coordinates into provider-sized batches for the
+Open-Meteo historical-forecast API:
+
+```bash
+# One representative point per 2,500 km² (roughly a 50 km × 50 km cell).
+TARGET_CELL_AREA_KM2=2500
+# Maximum latitude/longitude pairs in one weather-provider request.
+MAX_POINTS_WEATHER_API=150
+```
+
+Each research finding records its actual sampling method and point count. A store-based business
+investigation should use the relevant store coordinates rather than a regional grid.
+
 The database initialization scripts create schema and load the checked-in CSV fixtures under `examples/data/`. Those files hold internal business records only; weather, FX, and historic-event data remains an external-research concern.
+
+### Optional research-agent credentials
+
+Research agents are defined in `config/research-agents.json`, but their keys are never written
+there. To enable the FRED United States macroeconomic-data agent and the Guardian historic-news
+agent, add your personal keys to the untracked `.env` file and restart the API:
+
+```bash
+FRED_API_KEY=your-key
+GUARDIAN_API_KEY=your-key
+```
+
+The catalog references only the environment-variable names; the executor injects keys server-side
+and removes query-string credentials from returned source links before findings are archived or shown.
 
 Start the API and web app in separate terminals:
 
@@ -114,7 +189,31 @@ The model plans and interprets; code owns facts and arithmetic. The engine sends
 
 PostgreSQL and TimescaleDB are separate adapter instances. Intermediate findings move through typed graph state. The `Datasource` contract is deliberately broader than SQL so ClickHouse, BigQuery, Snowflake, MongoDB, or Elasticsearch adapters can be added later without changing the investigation loop.
 
-External specialists are not fan-out workers. The decision node can call at most one weather, economy/FX, or news/event capability when internal evidence suggests a concrete external mechanism. Their outputs always carry source, date range, confidence, and a `correlated` or `supporting` relationship; they cannot directly establish causation.
+External specialists are not fan-out workers. The decision node can call at most one relevant external capability when internal evidence suggests a concrete external mechanism. Their outputs always carry source, date range, confidence, and a `correlated` or `supporting` relationship; they cannot directly establish causation.
+
+LLM instructions are versioned as package-local text files in `apps/api/src/business_signals/prompts/`. The loader validates and caches named prompts; runtime schema, evidence, and user context remain typed payloads in code rather than being interpolated into prompt files.
+
+### Research-agent catalog
+
+`config/research-agents.json` is the versioned catalog of research agents. It includes the
+built-in weather, FX, and news/event agents and is the extension point for new integrations.
+Each entry declares its name, purpose, subjects, `evidence_topics`, enabled state, source, and a
+constrained HTTP/JSON workflow and response mapping. `evidence_topics` is the semantic contract
+used at runtime: a weather agent may run only for a hypothesis that claims a weather mechanism;
+an FX, event, or macroeconomic agent must match its own declared topic. This is independent of
+the hypothesis number or its display label. Credentials are never put in the JSON file: an agent
+refers only to an environment-variable name.
+
+Simple providers use an `http_json` runner with an HTTPS base URL, an API-key environment
+variable, fixed GET/POST endpoint templates, and an explicit JSON result mapping. More involved
+providers can use a `pipeline` runner that composes only allow-listed primitives: string splitting,
+HTTP JSON calls, geographic candidate selection, boundary sampling, coordinate batching, and
+daily-series aggregation. The weather integration is the first such pipeline; its URLs, parameters,
+JSON paths, measures, and rendering all remain in the catalog rather than Python conditionals.
+
+Templates may use only predeclared values. The catalog is data, not executable code: custom agents
+cannot run shell commands, arbitrary Python, or arbitrary URLs supplied by a model. The API exposes
+the installed catalog at `GET /api/research-agents` without any secret values.
 
 See [the architecture notes](docs/architecture.md) for trust boundaries and extension points.
 

@@ -59,11 +59,16 @@ class PostgreSQLDatasource(Datasource):
          AND tc.constraint_type='PRIMARY KEY'
         LEFT JOIN pg_stat_user_tables s
           ON s.schemaname=c.table_schema AND s.relname=c.table_name
-        WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema', '_timescaledb_internal')
+        WHERE c.table_schema NOT IN (
+          'pg_catalog', 'information_schema',
+          '_timescaledb_internal', '_timescaledb_catalog', '_timescaledb_config', '_timescaledb_cache',
+          'timescaledb_information', 'timescaledb_experimental'
+        )
+          AND c.table_schema <> :checkpoint_schema
         ORDER BY c.table_schema, c.table_name, c.ordinal_position
         """
         async with self.engine.connect() as connection:
-            result = await connection.execute(text(sql))
+            result = await connection.execute(text(sql), {"checkpoint_schema": settings.checkpoint_schema})
             return [dict(row) for row in result.mappings()]
 
     async def lightweight_fingerprint(self) -> str:

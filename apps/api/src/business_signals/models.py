@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, SecretStr
 
+from business_signals.config import settings
+
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -72,13 +74,29 @@ class DatasourceMetadata(BaseModel):
 
 
 class CrossDatasourceRelation(BaseModel):
+    """A relationship approved by an administrator for two separate connections."""
+
+    id: str = Field(default_factory=lambda: f"rel_{uuid4().hex[:10]}")
     source_datasource: str
     source_field: str
     target_datasource: str
     target_field: str
+    label: str = Field(default="Approved relationship", min_length=1, max_length=160)
+    cardinality: Literal["many_to_one", "one_to_one"] = "many_to_one"
     confidence: float = Field(ge=0, le=1)
-    origin: Literal["explicit", "name_type_match", "llm", "human"]
+    sampled_values: int = Field(default=0, ge=0)
+    matched_values: int = Field(default=0, ge=0)
+    origin: Literal["human", "value_overlap"] = "human"
     confirmed: bool = False
+
+
+class CrossDatasourceRelationCreate(BaseModel):
+    source_datasource: str
+    source_field: str
+    target_datasource: str
+    target_field: str
+    label: str = Field(min_length=1, max_length=160)
+    cardinality: Literal["many_to_one", "one_to_one"] = "many_to_one"
 
 
 class MetricDefinition(BaseModel):
@@ -86,6 +104,23 @@ class MetricDefinition(BaseModel):
     expression: str
     unit: str | None = None
     confidence: float = Field(ge=0, le=1)
+
+
+class InvestigationScope(BaseModel):
+    """The business scope the investigation is expected to measure."""
+
+    metric: str | None = None
+    comparison: str | None = None
+    dimensions: list[str] = Field(default_factory=list, max_length=12)
+    filters: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ScopeCoverage(BaseModel):
+    """A deterministic record of how much of a requested filter was matched."""
+
+    description: str
+    matched_records: int = Field(ge=0)
+    limited: bool = False
 
 
 class HypothesisStatus(str, Enum):
@@ -102,6 +137,9 @@ class Hypothesis(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str
     category: str
+    research_scope: Literal["internal", "external"] = "internal"
+    # A portable contract between a causal claim and configured evidence sources.
+    evidence_topics: list[str] = Field(default_factory=list, max_length=12)
     confidence: float = Field(ge=0, le=1)
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
@@ -121,6 +159,10 @@ class Evidence(BaseModel):
     source: str
     relationship: Literal["direct", "supporting", "correlated", "contradicting"]
     confidence: float = Field(ge=0, le=1)
+    # Premises establish the question's baseline; caveats establish a limitation.
+    # Neither should be rendered as evidence for a causal hypothesis.
+    scope: Literal["premise", "mechanism", "caveat"] = "mechanism"
+    evidence_topics: list[str] = Field(default_factory=list, max_length=12)
     hypothesis_ids: list[str] = Field(default_factory=list)
     # Strict Structured Outputs cannot accept an open-ended JSON object here.
     # Named values keep evidence inspectable while preserving a closed schema.
@@ -144,7 +186,11 @@ class InvestigationStep(BaseModel):
 
 
 class ExternalFinding(BaseModel):
-    type: Literal["weather", "economy_fx", "news_event"]
+    # Agent identifiers are catalog-defined.  They are not a fixed enum so a
+    # deployment can install an additional configured research agent.
+    # Underscores remain accepted for archived findings created before the
+    # catalog used hyphenated agent IDs.
+    type: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,62}$")
     location: str | None = None
     period: str
     observation: str
@@ -152,6 +198,34 @@ class ExternalFinding(BaseModel):
     confidence: float = Field(ge=0, le=1)
     source_url: str
     source_title: str
+    measurements: list["ExternalMeasurement"] = Field(default_factory=list)
+    coverage_method: str | None = None
+    point_count: int | None = Field(default=None, ge=1)
+
+
+class ExternalResearchCheck(BaseModel):
+    """A completed or unavailable external request, retained to prevent re-running it."""
+
+    hypothesis_id: str
+    agent_id: str
+    subject: str
+    start_date: str
+    end_date: str
+    comparison_start_date: str | None = None
+    status: Literal["completed", "unavailable"]
+
+
+class ExternalMeasurement(BaseModel):
+    """A provider-neutral before/after measurement from external research."""
+
+    name: str
+    unit: str
+    aggregation: Literal["mean", "sum"]
+    baseline_period: str
+    comparison_period: str
+    baseline_value: float
+    comparison_value: float
+    percentage_change: float | None = None
 
 
 class HumanFeedback(BaseModel):
@@ -171,16 +245,15 @@ class InvestigationStatus(str, Enum):
 
 
 class InvestigationLimits(BaseModel):
-    max_iterations: int = Field(default=8, ge=1, le=30)
-    max_sql_queries: int = Field(default=12, ge=1, le=50)
-    max_external_calls: int = Field(default=2, ge=0, le=10)
-    max_duration_seconds: int = Field(default=180, ge=10, le=1800)
+    max_iterations: int = Field(default_factory=lambda: settings.investigation_max_iterations, ge=1)
+    max_sql_queries: int = Field(default_factory=lambda: settings.investigation_max_sql_queries, ge=1)
+    max_external_calls: int = Field(default_factory=lambda: settings.investigation_max_external_calls, ge=0)
+    max_duration_seconds: int = Field(default_factory=lambda: settings.investigation_max_duration_seconds, ge=10)
 
 
 class InvestigationCreate(BaseModel):
     question: str = Field(min_length=10, max_length=2000)
     datasource_ids: list[str] = Field(min_length=1)
-    limits: InvestigationLimits = Field(default_factory=InvestigationLimits)
 
 
 class InvestigationEvent(BaseModel):
@@ -209,29 +282,65 @@ class ConversationTurn(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class ResolvedEntityReference(BaseModel):
+    """A backend-only entity identity retained for safe, efficient follow-up retrieval."""
+
+    datasource_id: str
+    table: str
+    identifier_field: str
+    identifier: str
+    display_name: str
+
+
+class QueryScope(BaseModel):
+    """Reusable, non-entity constraints from a successful direct query."""
+
+    datasource_id: str
+    table: str
+    predicate_sql: str
+
+
 class InvestigationState(BaseModel):
     investigation_id: str
+    # The graph checkpoint to resume. Follow-up turns use a distinct thread so they do not
+    # replay the completed original investigation.
+    checkpoint_thread_id: str | None = None
     question: str
     datasources: list[DatasourceSummary]
     original_question: str | None = None
     current_conversation_question: str | None = None
     limits: InvestigationLimits = Field(default_factory=InvestigationLimits)
     metric_definition: MetricDefinition | None = None
+    analysis_scope: InvestigationScope | None = None
+    scope_coverage: list[ScopeCoverage] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     hypothesis_name_index: dict[str, str] = Field(default_factory=dict)
     evidence: list[Evidence] = Field(default_factory=list)
     investigation_history: list[InvestigationStep] = Field(default_factory=list)
+    # Recoverable failures are part of the investigation record. They explain
+    # gaps in the conclusion without turning one unavailable check into a
+    # failed conversation.
+    failed_checks: list[str] = Field(default_factory=list)
     external_findings: list[ExternalFinding] = Field(default_factory=list)
+    external_research_checks: list[ExternalResearchCheck] = Field(default_factory=list)
     current_focus: str | None = None
     next_action: str | None = None
-    external_request: dict[str, str] | None = None
+    # Older archives contain one request; new investigations can dispatch several
+    # independent configured agents concurrently.
+    external_request: dict[str, str] | list[dict[str, str]] | None = None
     pending_step: InvestigationStep | None = None
     request_type: Literal["investigation", "direct_answer"] = "investigation"
     pending_human_question: str | None = None
     human_resume_node: Literal["generate_hypotheses", "answer_directly", "select_investigation"] | None = None
     human_feedback: list[HumanFeedback] = Field(default_factory=list)
+    # Time spent waiting for the user is not investigation runtime and must not consume its budget.
+    paused_at: datetime | None = None
+    paused_duration_seconds: float = Field(default=0, ge=0)
     conversation_turns: list[ConversationTurn] = Field(default_factory=list)
+    # This is persisted with the conversation but deliberately excluded from every HTTP response.
+    resolved_entities: list[ResolvedEntityReference] = Field(default_factory=list)
+    query_scopes: list[QueryScope] = Field(default_factory=list)
     iteration: int = 0
     query_count: int = 0
     external_call_count: int = 0

@@ -5,10 +5,10 @@ import pytest
 from business_signals.datasources.registry import DatasourceRegistry
 from business_signals.models import (
     ColumnMetadata,
+    CrossDatasourceRelation,
     DatasourceCreate,
     DatasourceMetadata,
     DatasourceSummary,
-    DatasourceType,
     TableMetadata,
 )
 
@@ -91,3 +91,32 @@ async def test_delete_removes_persisted_connection_and_schema(tmp_path: Path) ->
     assert restored.list() == []
     with pytest.raises(KeyError):
         restored.cached_metadata(added.id)
+
+
+@pytest.mark.asyncio
+async def test_approved_cross_datasource_relation_survives_restart_and_is_removed_with_connection(tmp_path: Path) -> None:
+    store_path = tmp_path / "datasources.json"
+    registry = PersistedFixtureRegistry(store_path)
+    first = await registry.add(fixture_config())
+    second_config = fixture_config().model_copy(update={"name": "Product catalog"})
+    second = await registry.add(second_config)
+    relation = CrossDatasourceRelation(
+        source_datasource=first.id,
+        source_field="public.activity.item_reference",
+        target_datasource=second.id,
+        target_field="public.catalog_items.item_reference",
+        label="Activity records belong to catalog items",
+        confidence=1,
+        sampled_values=10,
+        matched_values=10,
+        origin="human",
+        confirmed=True,
+    )
+    registry._cross_relations[relation.id] = relation
+    registry._save()
+
+    restored = PersistedFixtureRegistry(store_path)
+    assert restored.approved_cross_relations([first.id, second.id]) == [relation]
+
+    await restored.delete(second.id)
+    assert restored.approved_cross_relations([first.id]) == []

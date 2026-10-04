@@ -1,0 +1,315 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "weather",
+      "name": "Historical weather",
+      "enabled": true,
+      "purpose": "Compare observed weather conditions for a city, several cities, a region, or a country across a historical period.",
+      "subjects": ["weather", "temperature", "rain", "wind", "snow"],
+      "evidence_topics": ["weather.conditions"],
+      "runner": {
+        "kind": "pipeline",
+        "input": {
+          "subject_label": "location",
+          "subject_pattern": "^[A-Za-z][A-Za-z .,';-]{1,159}$"
+        },
+        "capabilities": ["geographic_scope"],
+        "steps": [
+          {
+            "id": "locations",
+            "type": "split_strings",
+            "source": "subject",
+            "target": "locations",
+            "separator": ";"
+          },
+          {
+            "id": "geocode",
+            "type": "http_json",
+            "target": "geocoded",
+            "for_each": "locations",
+            "bindings": { "subject": "" },
+            "request": {
+              "name": "geocode",
+              "url": "https://geocoding-api.open-meteo.com/v1/search",
+              "query": {
+                "name": "{subject}",
+                "count": "10",
+                "language": "en",
+                "format": "json"
+              }
+            }
+          },
+          {
+            "id": "select_locations",
+            "type": "select_geographic_locations",
+            "responses": "geocoded",
+            "locations": "locations",
+            "candidates_path": "results",
+            "target": "geographic_scope"
+          },
+          {
+            "id": "boundary",
+            "type": "http_json",
+            "target": "boundary_payload",
+            "when": "administrative_scope",
+            "request": {
+              "name": "boundary",
+              "url": "https://nominatim.openstreetmap.org/search",
+              "headers": { "User-Agent": "Business-Signals/0.1 (local research)" },
+              "query": {
+                "q": "{administrative_label}",
+                "format": "jsonv2",
+                "polygon_geojson": "1",
+                "addressdetails": "1",
+                "limit": "10"
+              }
+            }
+          },
+          {
+            "id": "sample_boundary",
+            "type": "sample_boundary",
+            "source": "boundary_payload",
+            "geometry_path": "0.geojson",
+            "scope": "geographic_scope"
+          },
+          {
+            "id": "coordinate_batches",
+            "type": "batch_coordinates",
+            "source": "geographic_scope",
+            "target": "coordinate_batches",
+            "max_items_setting": "max_points_weather_api"
+          },
+          {
+            "id": "forecast",
+            "type": "http_json",
+            "target": "forecast_payloads",
+            "for_each": "coordinate_batches",
+            "bindings": {
+              "latitudes": "latitudes",
+              "longitudes": "longitudes"
+            },
+            "request": {
+              "name": "forecast",
+              "url": "https://historical-forecast-api.open-meteo.com/v1/forecast",
+              "query": {
+                "latitude": "{latitudes}",
+                "longitude": "{longitudes}",
+                "start_date": "{start_date}",
+                "end_date": "{end_date}",
+                "daily": "temperature_2m_min,temperature_2m_max,precipitation_sum",
+                "timezone": "auto"
+              }
+            }
+          },
+          {
+            "id": "weather_summary",
+            "type": "summarize_daily_series",
+            "source": "forecast_payloads",
+            "daily_path": "daily",
+            "minimum_field": "temperature_2m_min",
+            "maximum_field": "temperature_2m_max",
+            "precipitation_field": "precipitation_sum",
+            "comparison_start_value": "comparison_start_date",
+            "comparison_metrics": [
+              {
+                "name": "Average daily low temperature",
+                "field": "temperature_2m_min",
+                "unit": "°C",
+                "aggregation": "mean"
+              },
+              {
+                "name": "Average daily high temperature",
+                "field": "temperature_2m_max",
+                "unit": "°C",
+                "aggregation": "mean"
+              },
+              {
+                "name": "Total precipitation",
+                "field": "precipitation_sum",
+                "unit": "mm",
+                "aggregation": "sum"
+              }
+            ]
+          }
+        ],
+        "output": {
+          "observation_template": "Across {point_count} location(s) ({coverage_method}), daily temperatures ranged from {minimum_value}°C to {maximum_value}°C. Average precipitation was {average_precipitation} mm per location.",
+          "source_title_template": "{agent_name} — {coverage_method}, {point_count} point(s)",
+          "confidence": 0.78
+        }
+      },
+      "source_url": "https://open-meteo.com/"
+    },
+    {
+      "id": "economy-fx",
+      "name": "Historical foreign exchange",
+      "enabled": true,
+      "purpose": "Check whether a currency movement could have affected costs, prices, margins, or demand.",
+      "subjects": ["exchange rates", "foreign exchange", "currency", "FX"],
+      "evidence_topics": ["currency.exchange"],
+      "runner": {
+        "kind": "http_json",
+        "input": {
+          "subject_label": "currency pair",
+          "subject_pattern": "^[A-Za-z]{3}/[A-Za-z]{3}$"
+        },
+        "input_transforms": [
+          {
+            "name": "base",
+            "operation": "split",
+            "source": "subject",
+            "separator": "/",
+            "index": 0,
+            "uppercase": true
+          },
+          {
+            "name": "quote",
+            "operation": "split",
+            "source": "subject",
+            "separator": "/",
+            "index": 1,
+            "uppercase": true
+          }
+        ],
+        "steps": [
+          {
+            "name": "rates",
+            "url": "https://api.frankfurter.app/{start_date}..{end_date}",
+            "query": {
+              "from": "{base}",
+              "to": "{quote}"
+            }
+          }
+        ],
+        "response": {
+          "computed": [
+            {
+              "name": "starting_rate",
+              "operation": "first",
+              "path": "rates.*.{quote}",
+              "precision": 6
+            },
+            {
+              "name": "ending_rate",
+              "operation": "last",
+              "path": "rates.*.{quote}",
+              "precision": 6
+            },
+            {
+              "name": "change_percent",
+              "operation": "percent_change",
+              "from_field": "starting_rate",
+              "to_field": "ending_rate",
+              "precision": 2
+            }
+          ],
+          "observation_template": "{base}/{quote} moved {change_percent}% across the requested period.",
+          "confidence": 0.82
+        }
+      },
+      "source_url": "https://frankfurter.dev/"
+    },
+    {
+      "id": "guardian-news",
+      "name": "Historic news and events (Guardian)",
+      "enabled": true,
+      "purpose": "Find relevant reported news and unscheduled public events that may provide context for a business change.",
+      "subjects": ["news", "event", "disruption", "strike", "outage", "holiday"],
+      "evidence_topics": ["public.events"],
+      "runner": {
+        "kind": "http_json",
+        "authentication": {
+          "type": "api_key",
+          "environment": "GUARDIAN_API_KEY",
+          "location": "query",
+          "name": "api-key"
+        },
+        "input": {
+          "subject_label": "location",
+          "subject_pattern": "^[A-Za-z][A-Za-z .,'-]{1,79}$"
+        },
+        "steps": [
+          {
+            "name": "search",
+            "url": "https://content.guardianapis.com/search",
+            "query": {
+              "q": "{subject}",
+              "from-date": "{start_date}",
+              "to-date": "{end_date}",
+              "order-by": "newest",
+              "page-size": "10",
+              "show-fields": "trailText"
+            }
+          }
+        ],
+        "response": {
+          "items_path": "response.results",
+          "observation_template": "{webTitle}",
+          "no_result_observation_template": "No matching major event was found.",
+          "source_title_template": "The Guardian: {sectionName}",
+          "source_url_template": "{webUrl}",
+          "confidence": 0.68
+        }
+      },
+      "source_url": "https://open-platform.theguardian.com/"
+    },
+    {
+      "id": "fred-macro",
+      "name": "US economic data (FRED)",
+      "enabled": true,
+      "purpose": "Find a relevant United States economic series and retrieve its latest recorded value for the requested period.",
+      "subjects": ["inflation", "unemployment", "interest rates", "GDP", "United States economic data"],
+      "evidence_topics": ["macroeconomy.conditions"],
+      "runner": {
+        "kind": "http_json",
+        "authentication": {
+          "type": "api_key",
+          "environment": "FRED_API_KEY",
+          "location": "query",
+          "name": "api_key"
+        },
+        "input": {
+          "subject_label": "United States economic topic",
+          "subject_pattern": "^[^\\r\\n\\x00]{2,160}$"
+        },
+        "steps": [
+          {
+            "name": "find_series",
+            "url": "https://api.stlouisfed.org/fred/series/search",
+            "query": {
+              "search_text": "{subject}",
+              "file_type": "json",
+              "limit": "1"
+            },
+            "extract": {
+              "series_id": "seriess.0.id",
+              "series_title": "seriess.0.title",
+              "series_units": "seriess.0.units"
+            }
+          },
+          {
+            "name": "observations",
+            "url": "https://api.stlouisfed.org/fred/series/observations",
+            "query": {
+              "series_id": "{series_id}",
+              "observation_start": "{start_date}",
+              "observation_end": "{end_date}",
+              "sort_order": "asc",
+              "file_type": "json"
+            }
+          }
+        ],
+        "response": {
+          "items_path": "observations",
+          "item": "last",
+          "observation_template": "{series_title}: the latest recorded value in this period was {value} on {date} ({series_units}).",
+          "no_result_observation_template": "FRED found the {series_title} series, but it has no observations in the requested period.",
+          "source_title_template": "FRED: {series_title}",
+          "confidence": 0.84
+        }
+      },
+      "source_url": "https://fred.stlouisfed.org/"
+    }
+  ]
+}

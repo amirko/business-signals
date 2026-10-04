@@ -5,11 +5,19 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Literal, TypeVar
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from business_signals.config import settings
-from business_signals.models import Evidence, FinalAnalysis, Hypothesis, InvestigationStep, MetricDefinition
+from business_signals.models import (
+    Evidence,
+    FinalAnalysis,
+    Hypothesis,
+    InvestigationScope,
+    MetricDefinition,
+)
+from business_signals.prompt_catalog import prompts
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -18,23 +26,12 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger("uvicorn.error")
 
 
-SYSTEM_PROMPT = """You are the planning component of a business root-cause investigation engine.
-Use only supplied metadata and evidence. Never fabricate schema, values, or business semantics.
-Keep competing hypotheses alive. Correlation is not causation. Prefer investigations with high
-information gain. SQL must be one read-only PostgreSQL SELECT and must use only supplied schema.
-All text that a person will read must use plain business language for a non-technical audience.
-Do not expose SQL, function names, table names, column names, datasource IDs, or implementation
-details in hypothesis names, descriptions, evidence, clarification questions, step purposes, or
-conclusions. For example, say "the total amount customers spent" rather than "SUM(revenue)" and
-say "the sales records may be incomplete" rather than a database-ingestion diagnosis. The sole
-exception is QueryPlan.sql, which is backend-only. Ask one concise clarification at a time, using
-ordinary words and useful choices rather than technical terminology.
-Return only the requested structured response. Use its exact property names and do not substitute
-similarly named fields. Do not include markdown or private chain-of-thought."""
+SYSTEM_PROMPT = prompts.load("system")
 
 
 class QuestionUnderstanding(BaseModel):
     metric_definition: MetricDefinition | None = None
+    scope: InvestigationScope | None = None
     observations: list[str] = Field(default_factory=list)
     ambiguity: str | None = None
     request_type: Literal["investigation", "direct_answer"] = "investigation"
@@ -59,9 +56,19 @@ class InvestigationPlan(BaseModel):
     step: PlannedInvestigationStep
 
 
+class CrossDatasourceLookup(BaseModel):
+    """A bounded lookup used to filter a query on another connected datasource."""
+
+    datasource_id: str
+    relation_id: str
+    sql: str
+    purpose: str
+
+
 class QueryPlan(BaseModel):
     sql: str
     purpose: str
+    cross_datasource_lookups: list[CrossDatasourceLookup] = Field(default_factory=list, max_length=3)
 
 
 class DirectAnswerPlan(BaseModel):
@@ -97,8 +104,26 @@ class EvidenceAssessment(BaseModel):
 
 
 class InvestigationDecision(BaseModel):
-    action: str = Field(pattern="^(continue|finish)$")
+    action: str = Field(pattern="^(continue|external|finish)$")
     reason: str
+
+
+class ExternalResearchPlan(BaseModel):
+    """A targeted, bounded lookup selected from the configured research-agent catalog."""
+
+    hypothesis_name: str
+    agent_id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,62}$")
+    subject: str = Field(min_length=1, max_length=160)
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    comparison_start_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    rationale: str = Field(min_length=10, max_length=500)
+
+
+class ExternalResearchPlans(BaseModel):
+    """A bounded set of independent catalog-defined external checks."""
+
+    plans: list[ExternalResearchPlan] = Field(min_length=1, max_length=3)
 
 
 class Synthesis(BaseModel):
@@ -111,21 +136,33 @@ class LLM(ABC):
 
 
 class OpenAICompatibleLLM(LLM):
+    """OpenAI's API, or a provider that implements its chat-completions contract."""
+
     def __init__(self) -> None:
         self.client: AsyncOpenAI | None = None
 
     async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T:
-        if not settings.openai_api_key:
-            raise RuntimeError("OPENAI_API_KEY is required to run an investigation")
+        if not settings.ai_api_key:
+            raise RuntimeError("AI_API_KEY is required when AI_PROVIDER is openai or openai_compatible")
         if self.client is None:
-            self.client = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+            self.client = AsyncOpenAI(api_key=settings.ai_api_key, base_url=settings.ai_base_url)
         step_name = response_model.__name__
-        logger.info("LLM step started: step=%s model=%s", step_name, settings.openai_model)
+        trusted_entities = payload.get("trusted_entity_references", [])
+        entity_names = [item.get("display_name") for item in trusted_entities if isinstance(item, dict)]
+        logger.info(
+            "LLM step started: provider=%s step=%s model=%s question=%r datasources=%d retained_entity_names=%s",
+            settings.ai_provider,
+            step_name,
+            settings.ai_model,
+            payload.get("question"),
+            len(payload.get("datasources", [])),
+            entity_names,
+        )
         try:
             # `parse` uses OpenAI Structured Outputs: the response is constrained to the
             # Pydantic schema, unlike JSON mode which guarantees valid JSON only.
             response = await self.client.chat.completions.parse(
-                model=settings.openai_model,
+                model=settings.ai_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"},
@@ -139,8 +176,89 @@ class OpenAICompatibleLLM(LLM):
                 raise RuntimeError("The model returned an empty structured response")
             result = message.parsed
         except Exception:
-            logger.exception("LLM step failed: step=%s", step_name)
+            logger.exception("LLM step failed: provider=%s step=%s", settings.ai_provider, step_name)
             raise
 
-        logger.info("LLM step completed: step=%s output=%s", step_name, result.model_dump_json())
+        logger.info(
+            "LLM step completed: provider=%s step=%s output=%s",
+            settings.ai_provider,
+            step_name,
+            result.model_dump_json(),
+        )
         return result
+
+
+class AnthropicLLM(LLM):
+    """Anthropic Messages API using a forced tool call for schema-validated output."""
+
+    endpoint = "https://api.anthropic.com/v1/messages"
+
+    async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T:
+        if not settings.ai_api_key:
+            raise RuntimeError("AI_API_KEY is required when AI_PROVIDER is anthropic")
+
+        step_name = response_model.__name__
+        trusted_entities = payload.get("trusted_entity_references", [])
+        entity_names = [item.get("display_name") for item in trusted_entities if isinstance(item, dict)]
+        logger.info(
+            "LLM step started: provider=anthropic step=%s model=%s question=%r datasources=%d retained_entity_names=%s",
+            step_name,
+            settings.ai_model,
+            payload.get("question"),
+            len(payload.get("datasources", [])),
+            entity_names,
+        )
+
+        request = {
+            "model": settings.ai_model,
+            "max_tokens": 4096,
+            "system": SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"}],
+            "tools": [
+                {
+                    "name": "submit_structured_response",
+                    "description": "Submit the requested response using the exact required schema.",
+                    "input_schema": response_model.model_json_schema(),
+                }
+            ],
+            "tool_choice": {"type": "tool", "name": "submit_structured_response"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    self.endpoint,
+                    headers={
+                        "x-api-key": settings.ai_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json=request,
+                )
+                response.raise_for_status()
+                content = response.json().get("content", [])
+            tool_use = next(
+                (
+                    block
+                    for block in content
+                    if block.get("type") == "tool_use" and block.get("name") == "submit_structured_response"
+                ),
+                None,
+            )
+            if not tool_use or not isinstance(tool_use.get("input"), dict):
+                raise RuntimeError("The model did not return the required structured response")
+            result = response_model.model_validate(tool_use["input"])
+        except Exception:
+            logger.exception("LLM step failed: provider=anthropic step=%s", step_name)
+            raise
+
+        logger.info(
+            "LLM step completed: provider=anthropic step=%s output=%s", step_name, result.model_dump_json()
+        )
+        return result
+
+
+def create_llm() -> LLM:
+    """Build the configured provider without leaking provider concerns into the engine."""
+    if settings.ai_provider == "anthropic":
+        return AnthropicLLM()
+    return OpenAICompatibleLLM()

@@ -1,9 +1,15 @@
 from pathlib import Path
 
-from business_signals.datasources.registry import DatasourceRegistry
 import pytest
-
-from business_signals.models import Evidence, FinalAnalysis, HumanFeedback, Hypothesis, InvestigationState, InvestigationStatus
+from business_signals.datasources.registry import DatasourceRegistry
+from business_signals.models import (
+    Evidence,
+    FinalAnalysis,
+    HumanFeedback,
+    Hypothesis,
+    InvestigationState,
+    InvestigationStatus,
+)
 from business_signals.service import InvestigationService
 
 
@@ -16,6 +22,7 @@ def build_state(investigation_id: str) -> InvestigationState:
         confidence=0.82,
         status="supported",
     )
+
     evidence = Evidence(
         id="ev_inventory",
         description="Available units fell before orders.",
@@ -42,6 +49,19 @@ def build_state(investigation_id: str) -> InvestigationState:
             summary="Inventory is the strongest explanation.",
         ),
     )
+
+
+def test_selected_follow_up_option_becomes_a_meaningful_next_request() -> None:
+    question = (
+        "Would you like me to (A) inspect transaction records, (B) look for a platform mapping, "
+        "or (C) accept a best-effort estimate using session-level metrics?"
+    )
+
+    assert InvestigationService._follow_up_request(question, "C") == (
+        "accept a best-effort estimate using session-level metrics"
+    )
+    assert InvestigationService._follow_up_request(question, "A.") == "inspect transaction records"
+    assert InvestigationService._follow_up_request(question, "Ask about stores") == "Ask about stores"
 
 
 def test_archive_restores_question_answers_hypotheses_evidence_and_conclusion(tmp_path: Path) -> None:
@@ -141,7 +161,9 @@ async def test_completed_investigation_can_continue_without_losing_prior_context
     resumed = await service.follow_up(state.investigation_id, "Break this down by store")
 
     assert resumed.status == InvestigationStatus.RUNNING
-    assert resumed.request_type == "direct_answer"
+    # The engine will classify this new turn from its actual question. A follow-up is
+    # not inherently a direct retrieval; it may also be a new "why" investigation.
+    assert resumed.request_type == "investigation"
     assert resumed.hypotheses == state.hypotheses
     assert resumed.evidence == state.evidence
     assert resumed.conversation_turns[0].question == state.question
@@ -151,6 +173,65 @@ async def test_completed_investigation_can_continue_without_losing_prior_context
     assert "Earlier confirmed preferences:" in resumed.question
     assert "Which region? Answer: Northern Italy" in resumed.question
     await service._tasks[state.investigation_id]
+
+
+@pytest.mark.asyncio
+async def test_clarification_resumes_the_follow_up_checkpoint_thread(tmp_path: Path) -> None:
+    service = InvestigationService(
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations"
+    )
+    state = build_state("inv_follow_up_waiting").model_copy(
+        update={
+            "status": InvestigationStatus.WAITING_FOR_HUMAN,
+            "pending_human_question": "Would you like daily or weekly totals?",
+            "checkpoint_thread_id": "inv_follow_up_waiting:follow_up:checkpoint",
+        }
+    )
+    service._records[state.investigation_id] = state
+    calls: list[str | None] = []
+
+    async def record_run(*_args, **kwargs) -> None:
+        calls.append(kwargs.get("thread_id"))
+
+    service._run = record_run  # type: ignore[method-assign]
+    await service.respond(state.investigation_id, "weekly")
+    await service._tasks[state.investigation_id]
+
+    assert calls == ["inv_follow_up_waiting:follow_up:checkpoint"]
+
+
+@pytest.mark.asyncio
+async def test_skipping_a_clarification_starts_a_fresh_context_preserving_turn(tmp_path: Path) -> None:
+    service = InvestigationService(
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations"
+    )
+    state = build_state("inv_skip_clarification").model_copy(
+        update={
+            "status": InvestigationStatus.WAITING_FOR_HUMAN,
+            "pending_human_question": "Would you like daily or weekly totals?",
+            "checkpoint_thread_id": "inv_skip_clarification:follow_up:paused",
+            "conversation_turns": [],
+        }
+    )
+    service._records[state.investigation_id] = state
+    calls: list[tuple[object, str | None]] = []
+
+    async def record_run(*args, **kwargs) -> None:
+        calls.append((args[1], kwargs.get("thread_id")))
+
+    service._run = record_run  # type: ignore[method-assign]
+    resumed = await service.skip_clarification(state.investigation_id, "Show the result by store instead")
+    await service._tasks[state.investigation_id]
+
+    assert resumed.status == InvestigationStatus.RUNNING
+    assert resumed.request_type == "investigation"
+    assert resumed.pending_human_question is None
+    assert resumed.hypotheses == state.hypotheses
+    assert resumed.evidence == state.evidence
+    assert resumed.human_feedback[-1].response.startswith("Skipped")
+    assert "New request: Show the result by store instead" in resumed.question
+    assert "Previous conclusion: Inventory is the strongest explanation." in resumed.question
+    assert calls[0][1] and calls[0][1] != state.checkpoint_thread_id
 
 
 def test_legacy_follow_up_uses_the_original_question_as_its_conversation_name(tmp_path: Path) -> None:

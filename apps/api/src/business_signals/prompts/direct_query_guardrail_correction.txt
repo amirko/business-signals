@@ -1,0 +1,1 @@
+Correct the query using only the supplied datasource schema. Keep the same datasource_id and return one read-only PostgreSQL SELECT with a plain-language purpose.

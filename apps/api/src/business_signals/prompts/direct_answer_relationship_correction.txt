@@ -1,0 +1,1 @@
+Correct this complete retrieval plan. The user explicitly requested a breakdown by a related business entity. Add a supporting query on the target side of this approved relationship that returns its matching key and readable label, plus any requested descriptive dimension. Keep the main query, use isolated read-only datasource queries, and return the full corrected plan.

@@ -1,0 +1,1 @@
+Correct the plan. The user has already selected every available datasource. Do not ask them to select a datasource, an approach, a period, or a definition, and never write a clarification message as SQL. Decide which selected sources are necessary, query each one separately, and combine their results when needed. Return only an executable retrieval plan.
