@@ -10,11 +10,13 @@ from business_signals.llm import (
     DirectAnswerPlan,
     DirectAnswerQuery,
     EvidenceAssessment,
+    ExternalAgentAssignments,
     ExternalResearchPlan,
     ExternalResearchPlans,
     HypothesisPlan,
     InvestigationDecision,
     InvestigationPlan,
+    PremiseValidationPlan,
     QueryPlan,
     QuestionUnderstanding,
     Synthesis,
@@ -32,6 +34,7 @@ from business_signals.models import (
     HumanFeedback,
     HypothesisStatus,
     InvestigationState,
+    InvestigationStatus,
     Observation,
     QueryScope,
     ResolvedEntityReference,
@@ -604,6 +607,37 @@ class FakeRegistry:
         return []
 
 
+class CachedSchemaRegistry(FakeRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.metadata_calls = 0
+
+    def cached_metadata(self, datasource_id: str) -> DatasourceMetadata:
+        assert datasource_id == "analytics"
+        return self.metadata_value
+
+    async def metadata(self, datasource_id: str) -> DatasourceMetadata:
+        self.metadata_calls += 1
+        raise AssertionError("A persisted schema must not be rediscovered during an investigation")
+
+
+@pytest.mark.asyncio
+async def test_workflow_reuses_persisted_schema_payload_without_rediscovery() -> None:
+    registry = CachedSchemaRegistry()
+    engine = InvestigationEngine(registry)  # type: ignore[arg-type]
+    state = InvestigationState(
+        investigation_id="inv_schema_cache",
+        question="Why did revenue change?",
+        datasources=[registry.source.summary],
+    )
+
+    first = await engine._metadata_payload(state)
+    second = await engine._metadata_payload(state)
+
+    assert first == second
+    assert registry.metadata_calls == 0
+
+
 class VocabularyDatasource:
     summary = DatasourceSummary(id="source", name="Source", type=DatasourceType.POSTGRESQL, connected=True)
 
@@ -670,6 +704,41 @@ async def test_question_understanding_resolves_a_quoted_term_from_any_text_dimen
     assert registry.source.queries == [
         'SELECT DISTINCT "descriptor" AS value FROM "public"."lookup_a" WHERE "descriptor" IS NOT NULL LIMIT 51'
     ]
+
+
+class MeasureFirstClarificationLLM:
+    async def structured(self, response_model, _instruction: str, _payload: dict):
+        assert response_model is QuestionUnderstanding
+        return QuestionUnderstanding.model_validate({
+            "metric_definition": {
+                "name": "Sales",
+                "expression": "The requested business measure",
+                "unit": None,
+                "confidence": 0.45,
+            },
+            "scope": {"filters": ["outdoor-product"]},
+            "ambiguity": "When you say sales, do you mean the total amount customers spent, the number of items sold, or the number of orders?",
+            "clarification_kind": "measure",
+        })
+
+
+@pytest.mark.asyncio
+async def test_measure_clarification_is_not_discarded_when_a_catalog_term_is_inferable() -> None:
+    registry = VocabularyRegistry()
+    engine = InvestigationEngine(registry, llm=MeasureFirstClarificationLLM())  # type: ignore[arg-type]
+    state = InvestigationState(
+        investigation_id="inv_measure_before_scope",
+        question="Why did outdoor-product sales fall?",
+        datasources=[registry.source.summary],
+    )
+
+    update = await engine._understand(state)
+
+    assert update["pending_human_question"] == (
+        "When you say sales, do you mean the total amount customers spent, the number of items sold, or the number of orders?"
+    )
+    assert update["status"] == InvestigationStatus.WAITING_FOR_HUMAN
+    assert registry.source.queries == []
 
 
 class SetComparisonDatasource:
@@ -773,6 +842,7 @@ class FixtureLLM:
                 {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.35},
             ]},
             InvestigationPlan: {"step": {"iteration": 0, "hypothesis_name": "Inventory constraint", "action": "compare revenue and stock", "datasource_id": "analytics", "rationale": "Tests supply before demand", "expected_information_gain": 0.9}},
+            PremiseValidationPlan: {"datasource_id": "analytics", "action": "Compare revenue before and after.", "rationale": "Verify the reported revenue change before explaining it."},
             QueryPlan: {"sql": "select region, revenue, available_units from sales_events", "purpose": "Measure revenue beside stock availability"},
             EvidenceAssessment: {"evidence": [{"id": "ev_stock", "description": "Low available units coincide with lower revenue", "source": "analytics", "relationship": "direct", "confidence": 0.86, "hypothesis_ids": ["hyp_stock"]}], "hypotheses": [
                 {"id": "hyp_stock", "name": "Inventory constraint", "description": "Stock availability constrained sales", "category": "inventory", "confidence": 0.86, "status": "supported"},
@@ -837,7 +907,7 @@ class HistoricalWeatherResearcher:
 
 
 @pytest.mark.asyncio
-async def test_historical_decline_adds_a_configured_external_hypothesis_when_the_plan_omits_one() -> None:
+async def test_historical_decline_does_not_attach_an_arbitrary_configured_agent() -> None:
     engine = InvestigationEngine(
         DatasourceRegistry(),
         llm=InternalOnlyHistoricalHypothesisLLM(),
@@ -851,10 +921,8 @@ async def test_historical_decline_adds_a_configured_external_hypothesis_when_the
 
     update = await engine._generate_hypotheses(state)
 
-    external = next(hypothesis for hypothesis in update["hypotheses"] if hypothesis.research_scope == "external")
-    assert external.name == "External conditions affected demand"
-    assert external.category == "external"
-    assert "weather, rain" in external.description
+    assert [hypothesis.name for hypothesis in update["hypotheses"]] == ["Inventory limitation"]
+    assert all(not hypothesis.external_agent_ids for hypothesis in update["hypotheses"])
 
 
 @pytest.mark.asyncio
@@ -883,6 +951,30 @@ class AmbiguousFixtureLLM(FixtureLLM):
                     "ambiguity": "Which region should the investigation use for the comparison?",
                 }
             )
+        return await super().structured(response_model, instruction, payload)
+
+
+class TrackPremiseValidationLLM(AmbiguousFixtureLLM):
+    """Records whether the baseline validator runs across a human pause."""
+
+    def __init__(self) -> None:
+        self.premise_validation_calls = 0
+
+    async def structured(self, response_model, instruction: str, payload: dict):
+        if response_model is PremiseValidationPlan:
+            self.premise_validation_calls += 1
+        return await super().structured(response_model, instruction, payload)
+
+
+class TrackUnambiguousPremiseValidationLLM(FixtureLLM):
+    """Records the normal path, which must not wait for unnecessary input."""
+
+    def __init__(self) -> None:
+        self.calls: list[type] = []
+
+    async def structured(self, response_model, instruction: str, payload: dict):
+        if response_model in (QuestionUnderstanding, PremiseValidationPlan):
+            self.calls.append(response_model)
         return await super().structured(response_model, instruction, payload)
 
 
@@ -1009,48 +1101,34 @@ class CrossDatasourceInvestigationLLM:
         assert response_model is QueryPlan
         assert payload["selected_datasource"]["id"] == "analytics"
         return QueryPlan.model_validate({
-            "sql": (
-                "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events "
-                "WHERE item_id IN (SELECT id FROM lookup_outdoor_products) GROUP BY item_id"
-            ),
+            "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id",
             "purpose": "Measure sales for the selected catalog items.",
+            "contract": {
+                "claim_id": "hypothesis",
+                "role": "causal",
+                "basis": "direct",
+                "relationship_ids": ["rel_item"],
+                "rationale": "The approved relationship supplies the selected catalog items.",
+            },
             "cross_datasource_lookups": [{
                 "datasource_id": "catalog",
-                "relation_id": "lookup_outdoor_products",
+                "relation_id": "rel_item",
                 "sql": "SELECT id AS relationship_key FROM public.products WHERE name = 'Lantern'",
                 "purpose": "Find the selected catalog item.",
             }],
         })
 
 
-def test_cross_datasource_lookup_aliases_are_not_treated_as_primary_tables() -> None:
+def test_cross_datasource_lookup_aliases_are_rejected_in_primary_sql() -> None:
     sql = (
         "SELECT * FROM public.sales_events "
         "WHERE product_id IN (SELECT id FROM lookup_outdoor_products) "
         "AND store_id IN (SELECT id FROM lookup_milan_stores)"
     )
-    cleaned = InvestigationEngine._remove_cross_datasource_lookup_placeholders(
-        sql,
-        [
-            CrossDatasourceLookup(
-                datasource_id="catalog",
-                relation_id="lookup_outdoor_products",
-                sql="SELECT id FROM public.products",
-                purpose="Find outdoor products.",
-            ),
-            CrossDatasourceLookup(
-                datasource_id="catalog",
-                relation_id="lookup_milan_stores",
-                sql="SELECT id FROM public.stores",
-                purpose="Find Milan stores.",
-            ),
-        ],
-        {"public.sales_events"},
-    )
+    with pytest.raises(UnsafeQueryError, match="outside the selected datasource"):
+        from business_signals.datasources.safety import validate_query_tables
 
-    assert "lookup_outdoor_products" not in cleaned
-    assert "lookup_milan_stores" not in cleaned
-    assert "1 = 1" in cleaned
+        validate_query_tables(sql, {"public.sales_events"})
 
 
 @pytest.mark.asyncio
@@ -1074,7 +1152,6 @@ async def test_cross_datasource_lookup_rejects_mixed_keys_before_querying_the_re
         }
         for source_id in ("analytics", "catalog")
     ]
-
     with pytest.raises(UnsafeQueryError, match="do not combine different keys with UNION"):
         await engine._apply_cross_datasource_lookups(
             state,
@@ -1095,6 +1172,62 @@ async def test_cross_datasource_lookup_rejects_mixed_keys_before_querying_the_re
         )
 
     assert registry.catalog.queries == []
+
+
+class AgentAssignmentReviewLLM:
+    async def structured(self, response_model, _instruction: str, _payload: dict):
+        if response_model is HypothesisPlan:
+            return HypothesisPlan.model_validate({"hypotheses": [{
+                "id": "hyp_external",
+                "name": "An external explanation",
+                "description": "An external factor could have changed the outcome.",
+                "category": "generic",
+                "research_scope": "external",
+                "external_agent_ids": ["unrelated-agent"],
+                "claim": {
+                    "cause": "An external factor",
+                    "mechanism": "could change the outcome",
+                    "outcome": "the reported change",
+                    "required_evidence": ["A matching external observation."],
+                },
+                "confidence": 0.3,
+            }]})
+        assert response_model is ExternalAgentAssignments
+        return ExternalAgentAssignments.model_validate({"assignments": [{
+            "hypothesis_name": "An external explanation",
+            "agent_ids": [],
+            "valid": False,
+            "rationale": "The configured agent cannot test this claim with the available input.",
+        }]})
+
+
+class UnrelatedAgentResearcher:
+    def available_agents(self) -> list[dict[str, object]]:
+        return [{
+            "id": "unrelated-agent",
+            "name": "Unrelated research",
+            "purpose": "Check an unrelated public signal.",
+            "subjects": ["unrelated"],
+            "subject_label": "subject",
+            "subject_pattern": ".+",
+        }]
+
+
+@pytest.mark.asyncio
+async def test_independent_agent_review_rejects_an_irrelevant_assignment() -> None:
+    engine = InvestigationEngine(
+        DatasourceRegistry(),
+        llm=AgentAssignmentReviewLLM(),
+        researcher=UnrelatedAgentResearcher(),  # type: ignore[arg-type]
+    )
+
+    update = await engine._generate_hypotheses(
+        InvestigationState(investigation_id="inv_agent_review", question="Why did the measure change?", datasources=[])
+    )
+
+    hypothesis = update["hypotheses"][0]
+    assert hypothesis.research_scope == "internal"
+    assert hypothesis.external_agent_ids == []
 
 
 class IncorrectIntersectionDirectAnswerLLM(DirectAnswerFixtureLLM):
@@ -1179,6 +1312,57 @@ async def test_ambiguous_question_interrupts_then_resumes_from_checkpoint() -> N
     assert completed.status.value == "completed"
     assert completed.pending_human_question is None
     assert completed.human_feedback[0].response == "Use northern Italy."
+
+
+@pytest.mark.asyncio
+async def test_clarification_is_collected_before_decline_premise_validation() -> None:
+    registry = FakeRegistry()
+    llm = TrackPremiseValidationLLM()
+    engine = InvestigationEngine(registry, llm=llm)
+    initial = InvestigationState(
+        investigation_id="inv_clarification_before_premise",
+        question="Why did revenue fall?",
+        datasources=[registry.source.summary],
+    )
+    config = {"configurable": {"thread_id": initial.investigation_id}}
+
+    paused = InvestigationState.model_validate(await engine.graph.ainvoke(initial, config=config))
+
+    assert paused.status is InvestigationStatus.WAITING_FOR_HUMAN
+    assert llm.premise_validation_calls == 0
+    assert registry.source.queries == []
+
+    completed = InvestigationState.model_validate(
+        await engine.graph.ainvoke(Command(resume="Use northern Italy."), config=config)
+    )
+
+    assert completed.status is InvestigationStatus.COMPLETED
+    assert llm.premise_validation_calls == 1
+    assert any(evidence.scope == "premise" for evidence in completed.evidence)
+    assert all(evidence.hypothesis_id is None for evidence in completed.evidence if evidence.scope == "premise")
+
+
+@pytest.mark.asyncio
+async def test_unambiguous_decline_skips_clarification_and_validates_immediately() -> None:
+    registry = FakeRegistry()
+    llm = TrackUnambiguousPremiseValidationLLM()
+    engine = InvestigationEngine(registry, llm=llm)
+
+    result = InvestigationState.model_validate(
+        await engine.graph.ainvoke(
+            InvestigationState(
+                investigation_id="inv_unambiguous_premise",
+                question="Why did northern revenue fall?",
+                datasources=[registry.source.summary],
+            ),
+            config={"configurable": {"thread_id": "inv_unambiguous_premise"}},
+        )
+    )
+
+    assert result.status is InvestigationStatus.COMPLETED
+    assert result.pending_human_question is None
+    assert result.human_feedback == []
+    assert llm.calls == [QuestionUnderstanding, PremiseValidationPlan]
 
 
 @pytest.mark.asyncio
@@ -1751,12 +1935,11 @@ async def test_evidence_ambiguity_pauses_then_resumes_with_a_new_investigation_s
         await engine.graph.ainvoke(Command(resume="Compare July and August 2024."), config=config)
     )
     assert completed.status.value == "completed"
+    # The premise runs once before causal work. A clarification may add
+    # context, but it must not re-run that completed baseline.
     assert len(completed.investigation_history) == 3
-    assert any(
-        step.action.startswith("A repeated data check was skipped")
-        for step in completed.investigation_history
-    )
-    assert llm.evidence_calls == 2
+    assert {step.requirement_id for step in completed.investigation_history} == {None, "hyp_stock:r1", "hyp_demand:r1"}
+    assert llm.evidence_calls == 3
 
 
 class GenericEvidenceLLM:
@@ -1876,6 +2059,155 @@ def test_only_mechanism_evidence_with_matching_topics_can_attach_to_a_hypothesis
     assert affected == {"hyp_promotion"}
 
 
+def test_new_claim_contract_requires_an_explicit_single_evidence_owner() -> None:
+    state = InvestigationState.model_validate({
+        "investigation_id": "inv_claim_owner",
+        "question": "Why did the measure change?",
+        "datasources": [],
+        "hypotheses": [{
+            "id": "claim_one",
+            "name": "A proposed explanation",
+            "description": "A proposed explanation could account for the outcome.",
+            "category": "generic",
+            "claim": {
+                "cause": "A proposed change",
+                "mechanism": "changes the requested outcome",
+                "outcome": "the requested outcome",
+                "required_evidence": ["A direct matching observation."],
+            },
+            "confidence": 0.3,
+        }],
+    })
+    assessment = EvidenceAssessment.model_validate({
+        "evidence": [{
+            "id": "unowned",
+            "description": "A result was returned.",
+            "source": "connected records",
+            "relationship": "supporting",
+            "scope": "mechanism",
+            "confidence": 0.8,
+            "hypothesis_ids": ["claim_one"],
+        }, {
+            "id": "owned",
+            "description": "A result directly tested the proposed explanation.",
+            "source": "connected records",
+            "relationship": "supporting",
+            "scope": "mechanism",
+            "basis": "direct",
+            "claim_id": "claim_one",
+            "hypothesis_ids": ["claim_one"],
+            "confidence": 0.8,
+        }],
+        "hypotheses": [],
+        "confidence": 0.8,
+    })
+
+    evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
+
+    assert evidence[0].hypothesis_ids == []
+    assert evidence[0].claim_id is None
+    assert evidence[1].hypothesis_ids == ["claim_one"]
+    assert evidence[1].claim_id == "claim_one"
+    assert affected == {"claim_one"}
+
+
+def test_live_observation_owner_overrides_an_incorrect_llm_evidence_owner() -> None:
+    """The evidence interpreter cannot move H1's result into H2's tree."""
+    state = InvestigationState.model_validate({
+        "investigation_id": "inv_fixed_evidence_owner",
+        "question": "Why did the measure change?",
+        "datasources": [],
+        "hypotheses": [
+            {"id": "h1", "name": "First cause", "description": "First explanation", "category": "one", "confidence": 0.4},
+            {"id": "h2", "name": "Second cause", "description": "Second explanation", "category": "two", "confidence": 0.4},
+        ],
+        "observations": [{
+            "description": "The selected H1 check completed.",
+            "source": "analytics",
+            "value": {"hypothesis_id": "h1", "requirement_id": "h1:r1", "evidence_contract": {"role": "causal"}},
+        }],
+    })
+    assessment = EvidenceAssessment.model_validate({
+        "evidence": [{
+            "id": "mislabelled",
+            "description": "A result from H1's selected check.",
+            "source": "analytics",
+            "relationship": "supporting",
+            "scope": "mechanism",
+            "confidence": 0.8,
+            "claim_id": "h2",
+            "hypothesis_ids": ["h2"],
+        }],
+        "hypotheses": [],
+        "confidence": 0.8,
+    })
+
+    evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
+
+    assert evidence[0].hypothesis_id == "h1"
+    assert evidence[0].requirement_id == "h1:r1"
+    assert evidence[0].hypothesis_ids == ["h1"]
+    assert affected == {"h1"}
+
+
+def test_premise_contract_keeps_baseline_evidence_out_of_hypothesis_trees() -> None:
+    state = InvestigationState.model_validate({
+        "investigation_id": "inv_baseline_evidence",
+        "question": "Why did sales fall?",
+        "datasources": [],
+        "hypotheses": [{"id": "h1", "name": "A cause", "description": "A cause", "category": "generic", "confidence": 0.4}],
+        "observations": [{
+            "description": "Validate the reported change.",
+            "source": "analytics",
+            "value": {"evidence_contract": {"role": "baseline", "basis": "direct"}},
+        }],
+    })
+    assessment = EvidenceAssessment.model_validate({
+        "evidence": [{
+            "id": "baseline",
+            "description": "Sales increased by 7.1%.",
+            "source": "analytics",
+            "relationship": "direct",
+            "scope": "mechanism",
+            "confidence": 0.95,
+            "claim_id": "h1",
+            "hypothesis_ids": ["h1"],
+            "data": [{"field": "measured_metric_percentage_change", "value": 7.1}],
+        }],
+        "hypotheses": [],
+        "confidence": 0.95,
+    })
+
+    evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
+
+    assert evidence[0].scope == "premise"
+    assert evidence[0].hypothesis_id is None
+    assert evidence[0].hypothesis_ids == []
+    assert affected == set()
+
+
+def test_query_cache_is_scoped_to_the_final_sql_and_source_schema_version() -> None:
+    engine = InvestigationEngine(DatasourceRegistry())
+    sql = "SELECT revenue FROM sales_events WHERE occurred_at >= DATE '2024-07-01'"
+    key = engine._query_cache_key("analytics", "schema-v1", sql)
+    state = InvestigationState.model_validate({
+        "investigation_id": "inv_query_cache",
+        "question": "Why did revenue change?",
+        "datasources": [],
+        "query_result_cache": [{
+            "key": key,
+            "datasource_id": "analytics",
+            "schema_fingerprint": "schema-v1",
+            "rows": [{"revenue": 42}],
+            "display_rows": [{"revenue": 42}],
+            "deterministic_summary": {"row_count": 1},
+        }],
+    })
+
+    assert engine._cached_query_result(state, "analytics", "schema-v1", sql) is not None
+    assert engine._cached_query_result(state, "analytics", "schema-v2", sql) is None
+
+
 @pytest.mark.asyncio
 async def test_direct_evidence_rejecting_every_decline_hypothesis_finishes_with_no_decline() -> None:
     registry = FakeRegistry()
@@ -1948,6 +2280,37 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
     assert result["final_analysis"].likely_root_cause == "No meaningful overall decrease found"
     assert "1.0% negligibility threshold" in result["final_analysis"].summary
     assert result["conversation_turns"][-1].question == state.question
+
+
+def test_positive_premise_measurement_finishes_a_reported_decline_before_causal_checks() -> None:
+    engine = InvestigationEngine(DatasourceRegistry())
+    state = InvestigationState(
+        investigation_id="inv_premise_increase",
+        question="Why did sales fall in July?",
+        datasources=[],
+        evidence=[Evidence(
+            description="Sales increased in July.",
+            source="analytics",
+            relationship="direct",
+            confidence=0.95,
+            scope="premise",
+            data=[EvidenceDataPoint(field="measured_metric_percentage_change", value=7.1)],
+        )],
+    )
+
+    assert engine._no_material_decline(state)
+    assert engine._route_after_hypothesis_generation(state) == "select_investigation"
+
+
+def test_reported_decline_requires_a_premise_check_before_hypothesis_work() -> None:
+    engine = InvestigationEngine(DatasourceRegistry())
+    state = InvestigationState(
+        investigation_id="inv_premise_required",
+        question="Why did sales fall in July?",
+        datasources=[],
+    )
+
+    assert engine._route_after_hypothesis_generation(state) == "validate_premise"
 
 
 def test_possible_cause_percentage_change_cannot_trigger_the_negligible_decline_shortcut() -> None:

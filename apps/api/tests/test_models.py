@@ -26,6 +26,7 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
         investigation_max_external_calls=5,
         investigation_max_duration_seconds=900,
         ignore_investigation_limits=True,
+        metric_definition_confidence=0.72,
         target_cell_area_km2=1250,
         max_points_weather_api=42,
     )
@@ -35,5 +36,6 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
     assert configured.investigation_max_external_calls == 5
     assert configured.investigation_max_duration_seconds == 900
     assert configured.ignore_investigation_limits is True
+    assert configured.metric_definition_confidence == 0.72
     assert configured.target_cell_area_km2 == 1250
     assert configured.max_points_weather_api == 42

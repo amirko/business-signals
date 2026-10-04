@@ -23,7 +23,18 @@ type HypothesisStep = {
 type HypothesisActivity = { id: string; kind: 'step' | 'evidence' | 'clarification'; itemId: string };
 type Hypothesis = { id: string; name: string; description: string; confidence: number; status: string };
 type EvidenceDataPoint = { field: string; value: string | number | boolean | null };
-type Evidence = { id: string; description: string; relationship: string; confidence: number; hypothesis_ids: string[]; data?: EvidenceDataPoint[] };
+type Evidence = {
+  id: string;
+  description: string;
+  relationship: string;
+  confidence: number;
+  claim_id?: string | null;
+  hypothesis_id?: string | null;
+  requirement_id?: string | null;
+  hypothesis_ids: string[];
+  scope?: 'premise' | 'mechanism' | 'caveat' | string;
+  data?: EvidenceDataPoint[];
+};
 type FinalAnalysis = { likely_root_cause: string | null; confidence: number; summary: string; caveats: string[]; evidence?: Evidence[]; follow_up_question?: string | null };
 type InvestigationEvent = { id: string; type: string; message: string; data: Record<string, unknown> };
 type Clarification = { question: string; response?: string; hypothesisId?: string };
@@ -142,9 +153,11 @@ function ConversationTranscript({ turns, feedback, pendingQuestion, omitLatestAn
     ? orderedTurns.some((turn) => turn.question.trim() === pendingQuestion.trim())
     : false;
   if (orderedTurns.length === 0 && orderedFeedback.length === 0 && (!pendingQuestion || hasRecordedQuestion)) return null;
+  const showPendingBeforeFeedback = Boolean(pendingQuestion && !hasRecordedQuestion && orderedTurns.length === 0);
   let feedbackIndex = 0;
   return <section className="conversation-transcript" aria-label="Conversation history">
     <span className="section-kicker">CONVERSATION SO FAR</span>
+    {showPendingBeforeFeedback && <article className="conversation-turn conversation-question conversation-question-pending"><small>QUESTION</small><p>{pendingQuestion}</p>{isInvestigating && <span className="hypothesis-working"><RefreshCw className="spin" /> Investigating</span>}</article>}
     {orderedTurns.flatMap((turn, index) => {
       const items: ReactNode[] = [
         <article className="conversation-turn conversation-question" key={`question-${turn.created_at}-${index}`}><small>QUESTION</small><p>{turn.question}</p></article>,
@@ -161,7 +174,7 @@ function ConversationTranscript({ turns, feedback, pendingQuestion, omitLatestAn
       return items;
     })}
     {orderedFeedback.slice(feedbackIndex).map((item, index) => <article className="conversation-turn conversation-feedback" key={`feedback-later-${item.received_at}-${index}`}><small>FOLLOW-UP REQUEST</small><p>{item.question}</p><small>YOUR ANSWER</small><p className="saved-answer">{item.response}</p></article>)}
-    {pendingQuestion && !hasRecordedQuestion && <article className="conversation-turn conversation-question conversation-question-pending"><small>QUESTION</small><p>{pendingQuestion}</p>{isInvestigating && <span className="hypothesis-working"><RefreshCw className="spin" /> Investigating</span>}</article>}
+    {!showPendingBeforeFeedback && pendingQuestion && !hasRecordedQuestion && <article className="conversation-turn conversation-question conversation-question-pending"><small>QUESTION</small><p>{pendingQuestion}</p>{isInvestigating && <span className="hypothesis-working"><RefreshCw className="spin" /> Investigating</span>}</article>}
   </section>;
 }
 
@@ -278,7 +291,9 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
   const [replacementQuestion, setReplacementQuestion] = useState('');
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
   const [error, setError] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
   const [running, setRunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const stream = useRef<EventSource | null>(null);
   const reconciliationTimer = useRef<number | null>(null);
   const eventCursor = useRef(0);
@@ -331,11 +346,25 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       if (event.type === 'DatasourceSelected' || event.type === 'QueryStarted' || event.type === 'QueryRejected' || event.type === 'ExternalResearchSelected' || event.type === 'ExternalResearchStarted') setActiveHypothesisId(hypothesisId);
     }
     if (event.type === 'EvidenceFound' && event.data.evidence) {
-      const found = event.data.evidence as Evidence;
+      const received = event.data.evidence as Evidence;
+      // The backend's claim contract gives causal evidence one owner. Keep a
+      // narrow legacy fallback for saved investigations, but never render an
+      // ambiguous item under several hypotheses.
+      const receivedOwners = Array.isArray(received.hypothesis_ids) ? received.hypothesis_ids : [];
+      const legacyOwner = receivedOwners.length === 1 ? receivedOwners[0] : null;
+      const owner = typeof received.hypothesis_id === 'string'
+        ? received.hypothesis_id
+        : typeof received.claim_id === 'string'
+          ? received.claim_id
+          : legacyOwner;
+      const found: Evidence = {
+        ...received,
+        hypothesis_id: owner,
+        claim_id: owner,
+        hypothesis_ids: owner ? [owner] : [],
+      };
       setEvidence((current) => [...current.filter((item) => item.id !== found.id), found]);
-      found.hypothesis_ids.forEach((hypothesisId) => addHypothesisActivity(
-        hypothesisId, { id: `evidence:${found.id}`, kind: 'evidence', itemId: found.id },
-      ));
+      if (owner) addHypothesisActivity(owner, { id: `evidence:${found.id}`, kind: 'evidence', itemId: found.id });
     }
     if (event.type === 'HumanInputRequested') {
       // A reconnect can replay the pause that has just been answered. It is not a new
@@ -370,6 +399,15 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       terminalEpoch.current = investigationEpoch.current;
       setError(event.message);
       setRunning(false); setActiveHypothesisId(null); stream.current?.close(); stream.current = null;
+      if (reconciliationTimer.current !== null) window.clearTimeout(reconciliationTimer.current);
+      reconciliationTimer.current = null;
+      window.sessionStorage.removeItem(activeInvestigationStorageKey);
+    }
+    if (event.type === 'InvestigationStopped') {
+      terminalEpoch.current = investigationEpoch.current;
+      setStatusMessage(event.message);
+      setRunning(false); setStopping(false); setActiveHypothesisId(null); setClarificationQuestion(null);
+      stream.current?.close(); stream.current = null;
       if (reconciliationTimer.current !== null) window.clearTimeout(reconciliationTimer.current);
       reconciliationTimer.current = null;
       window.sessionStorage.removeItem(activeInvestigationStorageKey);
@@ -452,7 +490,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
         void reconcileUntilTerminal(id, streamEpoch);
       }
     };
-    ['InvestigationStarted', 'SchemaDiscovered', 'HypothesisCreated', 'DatasourceSelected', 'QueryStarted', 'QueryRejected', 'QueryCompleted', 'QueryFailed', 'ExternalResearchSelected', 'ExternalResearchStarted', 'ExternalResearchCompleted', 'ExternalResearchUnavailable', 'EvidenceFound', 'HypothesisUpdated', 'HumanInputRequested', 'HumanInputReceived', 'InvestigationCompleted', 'InvestigationFailed'].forEach((type) => eventSource.addEventListener(type, processEvent));
+    ['InvestigationStarted', 'SchemaDiscovered', 'HypothesisCreated', 'DatasourceSelected', 'QueryStarted', 'QueryReused', 'QueryRejected', 'QueryCompleted', 'QueryFailed', 'ExternalResearchSelected', 'ExternalResearchStarted', 'ExternalResearchCompleted', 'ExternalResearchUnavailable', 'EvidenceFound', 'HypothesisUpdated', 'HumanInputRequested', 'HumanInputReceived', 'InvestigationCompleted', 'InvestigationStopped', 'InvestigationFailed'].forEach((type) => eventSource.addEventListener(type, processEvent));
     eventSource.onerror = () => {
       if (stream.current === eventSource && streamEpoch === investigationEpoch.current) {
         void reconcileFinishedInvestigation(id, streamEpoch).then((reconciled) => {
@@ -536,7 +574,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       resumedInvestigation.status === 'waiting_for_human' ? resumedInvestigation.pending_human_question : null,
     );
     setClarificationResponse(''); setSwitchingClarification(false); setReplacementQuestion('');
-    setError('');
+    setError(''); setStatusMessage(''); setStopping(false);
     setRunning(resumedInvestigation.status === 'running');
     eventCursor.current = 0;
     if (resumedInvestigation.status === 'running') {
@@ -570,7 +608,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
     investigationEpoch.current += 1;
     terminalEpoch.current = null;
     answeredClarificationQuestions.current = new Set();
-    setError(''); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setHypothesisActivity({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setConversationTurns([]); setConversationFeedback([]); setPendingConversationQuestion(question.trim()); setInvestigationId(null); setFollowUpResponse(''); setClarificationQuestion(null); setClarificationResponse(''); setSwitchingClarification(false); setReplacementQuestion(''); setClarifications([]); setRunning(true); eventCursor.current = 0; stream.current?.close();
+    setError(''); setStatusMessage(''); setStopping(false); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setHypothesisActivity({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setConversationTurns([]); setConversationFeedback([]); setPendingConversationQuestion(question.trim()); setInvestigationId(null); setFollowUpResponse(''); setClarificationQuestion(null); setClarificationResponse(''); setSwitchingClarification(false); setReplacementQuestion(''); setClarifications([]); setRunning(true); eventCursor.current = 0; stream.current?.close();
     try {
       const response = await fetch(`${apiUrl}/api/investigations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, datasource_ids: selectedDatasourceIds }) });
       if (!response.ok) {
@@ -584,6 +622,33 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       openInvestigationStream(created.investigation_id);
       reconcileUntilTerminal(created.investigation_id);
     } catch (cause) { console.error('Could not start investigation', cause); setError('The investigation could not be started. Check the backend logs and try again.'); setRunning(false); }
+  };
+
+  const stopInvestigation = async () => {
+    if (!investigationId || stopping) return;
+    setStopping(true);
+    setError('');
+    try {
+      const response = await fetch(`${apiUrl}/api/investigations/${investigationId}/stop`, { method: 'POST' });
+      if (!response.ok) throw new Error(`Stop request failed with ${response.status}`);
+      const stopped = await response.json() as SavedInvestigation;
+      terminalEpoch.current = investigationEpoch.current;
+      setHypotheses(stopped.hypotheses);
+      setEvidence(stopped.evidence);
+      setConversationTurns(stopped.conversation_turns);
+      setConversationFeedback(stopped.human_feedback);
+      setClarificationQuestion(null); setRunning(false); setActiveHypothesisId(null);
+      setStatusMessage('Investigation stopped. The evidence collected so far was saved.');
+      stream.current?.close(); stream.current = null;
+      if (reconciliationTimer.current !== null) window.clearTimeout(reconciliationTimer.current);
+      reconciliationTimer.current = null;
+      window.sessionStorage.removeItem(activeInvestigationStorageKey);
+    } catch (cause) {
+      console.error('Could not stop investigation', cause);
+      setError('The investigation could not be stopped. Check the backend logs and try again.');
+    } finally {
+      setStopping(false);
+    }
   };
 
   const submitClarification = async (event: FormEvent<HTMLFormElement>) => {
@@ -745,6 +810,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
   // polling reconciliation.
   const questionAwaitingClarification = pendingConversationQuestion
     ?? (clarificationQuestion ? question.trim() || null : null);
+  const premiseEvidence = evidence.filter((item) => item.scope === 'premise');
   return (
     <div className="investigation-layout">
       <section className="work-column">
@@ -754,6 +820,11 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
         </div>
 
         <ConversationTranscript turns={conversationTurns} feedback={conversationFeedback} pendingQuestion={questionAwaitingClarification} omitLatestAnswer={finalAnalysis !== null} isInvestigating={running} />
+        {clarificationQuestion && <section className="clarification-stage active-clarification"><span className="section-kicker">CLARIFICATION</span>{clarifications.filter((item) => item.question === clarificationQuestion).map(renderClarification)}</section>}
+        {premiseEvidence.length > 0 && <section className="premise-validation" aria-label="Baseline validation">
+          <span className="section-kicker">BASELINE CHECK</span><h2>Did the reported change occur?</h2>
+          {premiseEvidence.map((item) => <article className="premise-evidence" key={item.id}><code>{item.id}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}
+        </section>}
 
         <div className="timeline-heading">
           <div><h2>Hypothesis investigation tree</h2><span>{running ? 'The graph is evaluating live evidence' : finalAnalysis ? 'Investigation complete' : 'Ready'}</span></div>
@@ -762,7 +833,11 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
 
         <div className="hypothesis-tree-list" aria-live="polite">
           {hypotheses.map((hypothesis, hypothesisIndex) => {
-            const relatedEvidence = evidence.filter((item) => item.hypothesis_ids.includes(hypothesis.id));
+            const relatedEvidence = evidence.filter((item) => {
+              const owners = Array.isArray(item.hypothesis_ids) ? item.hypothesis_ids : [];
+              const legacyOwner = owners.length === 1 ? owners[0] : null;
+              return (item.hypothesis_id ?? item.claim_id ?? legacyOwner) === hypothesis.id;
+            });
             const steps = hypothesisSteps[hypothesis.id] ?? [];
             const activities = hypothesisActivity[hypothesis.id] ?? [];
             const hypothesisLabel = `H${hypothesisIndex + 1}`;
@@ -797,8 +872,8 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
           {running && <div className="thinking-row"><span className="thinking-icon"><RefreshCw className="spin" /></span><div><strong>Investigation in progress…</strong><span>The next update will appear here automatically.</span></div></div>}
         </div>
         {error && <output className="notice investigation-error">{error}</output>}
+        {statusMessage && <output className="notice">{statusMessage}</output>}
         {finalAnalysis && <article className="final-result"><span className="section-kicker">FINAL ANALYSIS</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><ReportText>{finalAnalysis.summary}</ReportText><ReportData evidence={finalAnalysis.evidence} /><span className="source-chip">{Math.round(finalAnalysis.confidence * 100)}% confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}{!clarificationQuestion && <section className="follow-up-prompt"><p>Would you like to know more?</p><form onSubmit={(event) => { event.preventDefault(); void submitFollowUp(followUpResponse); }}><Textarea value={followUpResponse} onChange={(event) => setFollowUpResponse(event.target.value)} placeholder="Ask a follow-up question…" rows={3} /><div><Button type="submit" disabled={!followUpResponse.trim()}>Submit <ArrowRight /></Button><Button type="button" variant="outline" onClick={() => void submitFollowUp('No thanks')}>Stop</Button></div></form></section>}</article>}
-        {clarificationQuestion && <section className="clarification-stage active-clarification"><span className="section-kicker">CLARIFICATION</span>{clarifications.filter((item) => item.question === clarificationQuestion).map(renderClarification)}</section>}
         {!investigationId && <div className="question-card">
           <label htmlFor="question">Business question</label>
           <Textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} />
@@ -816,9 +891,10 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
         <p className="panel-copy">Confidence changes only when new evidence supports or contradicts a claim.</p>
         <p className="panel-copy">Each node in the tree shows its status, evidence, and completed investigative steps.</p>
         <div className="budget-card">
-          <div><span>Investigation state</span><strong>{running ? 'Running' : finalAnalysis ? 'Complete' : 'Ready'}</strong></div>
+          <div><span>Investigation state</span><strong>{running ? 'Running' : finalAnalysis ? 'Complete' : statusMessage ? 'Stopped' : 'Ready'}</strong></div>
           <div className="budget-bar"><span style={{ width: running ? '55%' : finalAnalysis ? '100%' : '0%' }} /></div>
           <div className="budget-grid"><span><strong>{Object.values(hypothesisSteps).flat().filter((item) => item.type.startsWith('Query')).length}</strong> query events</span><span><strong>{evidence.length}</strong> evidence items</span></div>
+          {running && <Button className="stop-investigation-button" type="button" variant="destructive" size="sm" onClick={() => void stopInvestigation()} disabled={stopping}>{stopping ? <><RefreshCw className="spin" /> Stopping</> : <><X /> Stop investigation</>}</Button>}
         </div>
       </aside>
     </div>

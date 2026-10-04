@@ -48,20 +48,15 @@ class ExternalResearchCoordinator:
     def available_agents(self) -> list[dict[str, Any]]:
         return self.researcher.available_agents()
 
-    @staticmethod
-    def _topics(item: Any) -> set[str]:
-        """Normalize declarative semantic capabilities before comparing them."""
-        raw = item.get("evidence_topics", []) if isinstance(item, dict) else getattr(item, "evidence_topics", [])
-        return {str(topic).strip().casefold() for topic in raw if str(topic).strip()}
-
     def eligible_agents_by_hypothesis(
         self, state: InvestigationState, available_agents: list[dict[str, Any]] | None = None
     ) -> dict[str, list[dict[str, Any]]]:
-        """Return only agents that can test each active causal mechanism.
+        """Return configured agents explicitly selected for each causal claim.
 
-        This is a semantic capability check. Adding a configured agent only
-        requires giving it the evidence topics it can supply; it never relies on
-        a hypothesis number, a category name, or an agent-specific code branch.
+        New hypotheses contain agent IDs chosen from each agent's declared
+        purpose and input contract.  This is generic: the workflow does not
+        infer that a particular mechanism requires a particular provider. Topic
+        matching remains only as an archive-compatibility fallback.
         """
         agents = available_agents if available_agents is not None else self.available_agents()
         checked_agents = {(check.hypothesis_id, check.agent_id) for check in state.external_research_checks}
@@ -75,13 +70,26 @@ class ExternalResearchCoordinator:
         for hypothesis in state.hypotheses:
             if hypothesis.research_scope != "external" or hypothesis.status in terminal:
                 continue
-            hypothesis_topics = self._topics(hypothesis)
-            if not hypothesis_topics:
+            selected_ids = set(hypothesis.external_agent_ids)
+            if not selected_ids:
+                hypothesis_topics = {
+                    str(topic).strip().casefold() for topic in hypothesis.evidence_topics if str(topic).strip()
+                }
+                selected_ids = {
+                    str(agent["id"])
+                    for agent in agents
+                    if hypothesis_topics.intersection({
+                        str(topic).strip().casefold()
+                        for topic in agent.get("evidence_topics", [])
+                        if str(topic).strip()
+                    })
+                }
+            if not selected_ids:
                 continue
             matching = [
                 agent
                 for agent in agents
-                if hypothesis_topics.intersection(self._topics(agent))
+                if str(agent["id"]) in selected_ids
                 and (hypothesis.id, str(agent["id"])) not in checked_agents
                 and (hypothesis.id, str(agent["id"])) not in legacy_checks
             ]
@@ -451,7 +459,12 @@ class ExternalResearchCoordinator:
                 finding,
                 Observation(
                     description=finding.observation,
-                    value={"external_finding": finding.model_dump(mode="json")},
+                    # Ownership is set by the selected external hypothesis,
+                    # not re-guessed when the finding is interpreted.
+                    value={
+                        "external_finding": finding.model_dump(mode="json"),
+                        "hypothesis_id": hypothesis_id,
+                    },
                     source=f"external:{finding.type}",
                 ),
                 InvestigationStep(

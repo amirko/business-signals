@@ -219,6 +219,44 @@ class InvestigationService:
         for investigation_id in list(self._records):
             await self.delete(investigation_id)
 
+    async def stop(self, investigation_id: str) -> InvestigationState:
+        """Cancel active work without discarding the saved investigation."""
+        state = self.get(investigation_id)
+        if state.status not in {
+            InvestigationStatus.QUEUED,
+            InvestigationStatus.RUNNING,
+            InvestigationStatus.WAITING_FOR_HUMAN,
+        }:
+            raise ValueError("Only an active investigation can be stopped")
+        task = self._tasks.get(investigation_id)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        stopped = self.get(investigation_id).model_copy(
+            update={
+                "status": InvestigationStatus.STOPPED,
+                "pending_step": None,
+                "external_request": None,
+                "pending_human_question": None,
+                "human_resume_node": None,
+                "paused_at": None,
+                "error": None,
+            }
+        )
+        self._records[investigation_id] = stopped
+        self._save_archive(stopped)
+        await self._publish(
+            InvestigationEvent(
+                investigation_id=investigation_id,
+                type="InvestigationStopped",
+                message="Investigation stopped. The evidence collected so far was saved.",
+            )
+        )
+        return stopped
+
     async def respond(self, investigation_id: str, response: str) -> InvestigationState:
         state = self.get(investigation_id)
         if state.status != InvestigationStatus.WAITING_FOR_HUMAN:

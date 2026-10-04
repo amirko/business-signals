@@ -1,1 +1,17 @@
-Generate 3 to 5 distinct, testable competing hypotheses. Identify them sequentially as H1, H2, and so on. Give each a concise, unique name suitable for a UI label. Every new hypothesis is untested and must have status active; do not mark it supported, rejected, confirmed, weakened, or needs_more_evidence until a later evidence check. Every hypothesis must declare `evidence_topics`: concise lower-case tags describing the mechanism it claims (for example `weather.conditions`, `promotion.discount`, `inventory.availability`, `currency.exchange`). Use the configured agents' `evidence_topics` as the authoritative catalog for external mechanisms. Set research_scope to external only when at least one configured agent has an exactly matching evidence topic and the hypothesis description actually describes that mechanism. A weather hypothesis must use weather topics; a currency hypothesis must use currency topics; never attach an unrelated topic merely to make an agent available. For a historical causal question about a business decline, include at least one plausible external hypothesis whenever the catalog can test a relevant mechanism. Otherwise set research_scope to internal. Write every name and description as a plain-language business explanation; do not expose implementation or database details.
+Generate 3 to 5 distinct, testable competing hypotheses. Identify them sequentially as H1, H2, and so on. Give each a concise, unique name suitable for a UI label. Every new
+hypothesis is untested and must have status active; do not mark it supported, rejected, confirmed, weakened, or needs_more_evidence until a later evidence check.
+
+For every hypothesis, fill `claim` with the proposed cause, the way it could produce the outcome, the business outcome being explained, and the evidence that would be needed to
+establish or weaken it. These are ordinary-language statements, not a fixed business taxonomy.
+
+Add one or two `requirements` for each hypothesis. A requirement is one narrowly scoped fact that can be checked once. Give it a stable ID unique within the hypothesis and
+an ordinary-language description. Do not create a generic "confirm the whole decline" requirement, and do not repeat a baseline measurement under every hypothesis.
+
+For external evidence, select `external_agent_ids` only from the configured agent catalog. Choose an agent only when its declared purpose and required input can test this exact
+claim, and when the question or connected records provide a grounded subject and date range for it. Never select an agent merely because it is available, because the claim is
+external, or because its name seems generally related. Set research_scope to external only when external_agent_ids is non-empty. Otherwise use internal. Write every name and
+description as a plain-language business explanation; do not expose implementation or database details.
+
+When a configured external agent has a grounded subject and time period, you MUST create a separate hypothesis for the kind of outside influence it can test (for example,
+conditions, reported events, or economic conditions). Assign that hypothesis only to that agent. For a historical location-based question, a configured news/events agent can
+use that location and period and must receive its own reported-events hypothesis. Never attach an agent to an unrelated internal hypothesis.

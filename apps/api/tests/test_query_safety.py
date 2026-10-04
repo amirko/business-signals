@@ -6,6 +6,7 @@ from business_signals.datasources.safety import (
     UnsafeQueryError,
     query_references_table,
     validate_cross_datasource_lookup_projection,
+    validate_query_columns,
     validate_query_tables,
     validate_read_query,
 )
@@ -66,6 +67,18 @@ def test_rejects_a_datasource_id_as_a_postgres_catalog() -> None:
 def test_allows_discovered_tables_and_cte_references() -> None:
     query = "WITH totals AS (SELECT sum(units) AS total FROM public.sales_events) SELECT * FROM totals"
     assert validate_query_tables(query, {"public.sales_events"}) == query
+
+
+def test_qualified_column_must_exist_in_the_discovered_schema() -> None:
+    assert validate_query_columns(
+        "SELECT se.revenue FROM public.sales_events AS se",
+        {"public.sales_events": {"revenue", "occurred_at"}},
+    )
+    with pytest.raises(UnsafeQueryError, match="outside the discovered schema"):
+        validate_query_columns(
+            "SELECT se.unknown_measure FROM public.sales_events AS se",
+            {"public.sales_events": {"revenue", "occurred_at"}},
+        )
 
 
 def test_recognizes_qualified_and_unqualified_metric_table_references() -> None:

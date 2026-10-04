@@ -98,6 +98,46 @@ def validate_query_tables(sql: str, allowed_tables: set[str]) -> str:
     return sql
 
 
+def validate_query_columns(sql: str, table_columns: dict[str, set[str]]) -> str:
+    """Reject qualified references to columns absent from discovered metadata.
+
+    This is deliberately narrower than a SQL type checker.  CTE output columns
+    and unqualified expressions can be valid only after SQL scope resolution,
+    while qualified physical-table references are deterministic.  Catching
+    those before execution converts the most common malformed model query into
+    a repairable guardrail failure instead of a database error.
+    """
+    try:
+        statement = sqlglot.parse_one(sql, read="postgres")
+    except sqlglot.errors.ParseError as exc:
+        raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
+
+    aliases: dict[str, set[str]] = {}
+    cte_names = {cte.alias_or_name for cte in statement.find_all(exp.CTE)}
+    for table in statement.find_all(exp.Table):
+        if table.name in cte_names:
+            continue
+        qualified = f"{table.db}.{table.name}" if table.db else table.name
+        columns = table_columns.get(qualified) or table_columns.get(table.name)
+        if columns is None:
+            # Table validation owns this error. Keeping this function focused
+            # makes it useful as a second validation after filters are bound.
+            continue
+        aliases[table.alias_or_name] = columns
+        aliases[table.name] = columns
+
+    for column in statement.find_all(exp.Column):
+        # ``*`` and CTE projections are not physical source columns.
+        if column.is_star or not column.table:
+            continue
+        columns = aliases.get(column.table)
+        if columns is not None and column.name not in columns:
+            raise UnsafeQueryError(
+                f"Query references a column outside the discovered schema: {column.table}.{column.name}"
+            )
+    return sql
+
+
 def query_references_table(sql: str, table_name: str) -> bool:
     """Return whether a query reads a physical table, allowing qualified or bare names."""
     statement = sqlglot.parse_one(sql, read="postgres")

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     query_timeout_seconds: int = 15
     max_query_rows: int = 500
     negligiblity_threshold_percent: float = 1.0
+    # Below this confidence, a proposed business measure is considered
+    # unresolved and must not be replaced by catalog vocabulary inference.
+    metric_definition_confidence: float = Field(default=0.75, ge=0, le=1)
     investigation_max_iterations: int = Field(default=8, ge=1)
     investigation_max_sql_queries: int = Field(default=12, ge=1)
     investigation_max_external_calls: int = Field(default=2, ge=0)

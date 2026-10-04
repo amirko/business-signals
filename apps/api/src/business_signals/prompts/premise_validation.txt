@@ -1,0 +1,3 @@
+Select the one datasource that can directly validate the user-reported before-and-after business change. This is a baseline check, not a causal
+investigation: choose a source with the requested business metric and period. Return an exact supplied datasource ID. Describe the check and
+rationale in everyday business language without tables, fields, IDs, SQL, or implementation details.

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from business_signals.datasources.registry import DatasourceRegistry
-from business_signals.models import InvestigationEvent, InvestigationState
+from business_signals.models import InvestigationEvent, InvestigationState, InvestigationStatus
 from business_signals.service import InvestigationService
 
 
@@ -116,3 +116,29 @@ async def test_investigation_failure_is_logged_but_not_sent_to_client(
     assert "sensitive diagnostic" in caplog.text
     assert failed.error == "The investigation could not be completed. Check the backend logs and try again."
     assert event.data == {"error_code": "investigation_failed"}
+
+
+@pytest.mark.asyncio
+async def test_stopping_an_active_investigation_cancels_work_and_preserves_the_archive(tmp_path: Path) -> None:
+    service = InvestigationService(DatasourceRegistry(), archive_dir=tmp_path / "investigations")
+    state = InvestigationState(
+        investigation_id="inv_stop",
+        question="Why did revenue decline?",
+        datasources=[],
+        status=InvestigationStatus.RUNNING,
+    )
+    service._records[state.investigation_id] = state
+    service._save_archive(state)
+
+    async def keep_running() -> None:
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(keep_running())
+    service._tasks[state.investigation_id] = task
+    stopped = await service.stop(state.investigation_id)
+
+    assert task.cancelled()
+    assert stopped.status == InvestigationStatus.STOPPED
+    assert stopped.pending_step is None
+    assert service._archive_path(state.investigation_id).exists()
+    assert service._events[state.investigation_id][-1].type == "InvestigationStopped"

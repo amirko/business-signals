@@ -20,3 +20,4 @@ def test_openapi_exposes_investigation_surface() -> None:
     assert "/api/investigations" in paths
     assert "/api/investigations/{investigation_id}/events" in paths
     assert "/api/investigations/{investigation_id}/responses" in paths
+    assert "/api/investigations/{investigation_id}/stop" in paths

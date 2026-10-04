@@ -173,7 +173,7 @@ async def delete_cross_datasource_relationship(relationship_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes"}, status_code=202)
+@app.post("/api/investigations", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
 async def create_investigation(payload: InvestigationCreate) -> InvestigationState:
     try:
         return await investigations.create(payload)
@@ -181,7 +181,7 @@ async def create_investigation(payload: InvestigationCreate) -> InvestigationSta
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/api/investigations", response_model=list[InvestigationState], response_model_exclude={"resolved_entities", "query_scopes"})
+@app.get("/api/investigations", response_model=list[InvestigationState], response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
 async def list_investigations() -> list[InvestigationState]:
     return investigations.list()
 
@@ -194,7 +194,7 @@ async def delete_all_investigations() -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.get("/api/investigations/{investigation_id}", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes"})
+@app.get("/api/investigations/{investigation_id}", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
 async def get_investigation(investigation_id: str) -> InvestigationState:
     try:
         return investigations.get(investigation_id)
@@ -206,6 +206,16 @@ async def get_investigation(investigation_id: str) -> InvestigationState:
 async def delete_investigation(investigation_id: str) -> None:
     try:
         await investigations.delete(investigation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/investigations/{investigation_id}/stop", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
+async def stop_investigation(investigation_id: str) -> InvestigationState:
+    try:
+        return await investigations.stop(investigation_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -238,7 +248,7 @@ async def stream_events(
     return EventSourceResponse(generate(), ping=15)
 
 
-@app.post("/api/investigations/{investigation_id}/responses", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/responses", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
 async def respond_to_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.respond(investigation_id, payload.response)
@@ -248,7 +258,7 @@ async def respond_to_investigation(investigation_id: str, payload: HumanResponse
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
 async def follow_up_on_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.follow_up(investigation_id, payload.response)
@@ -258,7 +268,7 @@ async def follow_up_on_investigation(investigation_id: str, payload: HumanRespon
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/skip-clarification", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/skip-clarification", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
 async def skip_investigation_clarification(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.skip_clarification(investigation_id, payload.response)

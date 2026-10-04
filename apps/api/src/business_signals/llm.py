@@ -34,6 +34,10 @@ class QuestionUnderstanding(BaseModel):
     scope: InvestigationScope | None = None
     observations: list[str] = Field(default_factory=list)
     ambiguity: str | None = None
+    # Only one question can pause a conversation at a time. This lets the
+    # workflow preserve a business-measure clarification while resolving a
+    # separate vocabulary term from discovered data.
+    clarification_kind: Literal["measure", "scope", "period", "definition", "other"] = "other"
     request_type: Literal["investigation", "direct_answer"] = "investigation"
 
 
@@ -46,6 +50,9 @@ class PlannedInvestigationStep(BaseModel):
 
     iteration: int = 0
     hypothesis_name: str
+    # Older saved conversations do not contain this field. The workflow then
+    # selects the first still-pending requirement deterministically.
+    requirement_id: str = ""
     action: str
     datasource_id: str | None = None
     rationale: str
@@ -54,6 +61,14 @@ class PlannedInvestigationStep(BaseModel):
 
 class InvestigationPlan(BaseModel):
     step: PlannedInvestigationStep
+
+
+class PremiseValidationPlan(BaseModel):
+    """Choose the source for validating a user-reported business change."""
+
+    datasource_id: str
+    action: str
+    rationale: str
 
 
 class CrossDatasourceLookup(BaseModel):
@@ -65,10 +80,27 @@ class CrossDatasourceLookup(BaseModel):
     purpose: str
 
 
+class EvidenceCheckContract(BaseModel):
+    """A bounded statement of what a generated query is allowed to prove.
+
+    SQL remains a model proposal, but this contract is independently checked by
+    the workflow before a database is touched.  It is intentionally phrased in
+    business terms rather than a fixed list of causes or field names.
+    """
+
+    claim_id: str | None = None
+    requirement_id: str | None = None
+    role: Literal["baseline", "causal", "limitation"] = "causal"
+    basis: Literal["direct", "proxy"] = "direct"
+    relationship_ids: list[str] = Field(default_factory=list, max_length=2)
+    rationale: str = Field(default="", max_length=500)
+
+
 class QueryPlan(BaseModel):
     sql: str
     purpose: str
-    cross_datasource_lookups: list[CrossDatasourceLookup] = Field(default_factory=list, max_length=3)
+    cross_datasource_lookups: list[CrossDatasourceLookup] = Field(default_factory=list, max_length=2)
+    contract: EvidenceCheckContract = Field(default_factory=EvidenceCheckContract)
 
 
 class DirectAnswerPlan(BaseModel):
@@ -124,6 +156,19 @@ class ExternalResearchPlans(BaseModel):
     """A bounded set of independent catalog-defined external checks."""
 
     plans: list[ExternalResearchPlan] = Field(min_length=1, max_length=3)
+
+
+class ExternalAgentAssignment(BaseModel):
+    """Independent suitability verdict for configured research agents."""
+
+    hypothesis_name: str
+    agent_ids: list[str] = Field(default_factory=list, max_length=8)
+    valid: bool
+    rationale: str = Field(min_length=1, max_length=500)
+
+
+class ExternalAgentAssignments(BaseModel):
+    assignments: list[ExternalAgentAssignment] = Field(default_factory=list, max_length=8)
 
 
 class Synthesis(BaseModel):

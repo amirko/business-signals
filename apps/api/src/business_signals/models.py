@@ -132,13 +132,47 @@ class HypothesisStatus(str, Enum):
     NEEDS_MORE_EVIDENCE = "needs_more_evidence"
 
 
+class CausalClaim(BaseModel):
+    """Schema-independent contract for one proposed explanation.
+
+    The text is deliberately ordinary language.  It lets the workflow decide
+    whether a proposed check actually bears on the explanation without
+    teaching the application a fixed catalogue of business causes.
+    """
+
+    cause: str = Field(min_length=1, max_length=500)
+    mechanism: str = Field(min_length=1, max_length=500)
+    outcome: str = Field(min_length=1, max_length=500)
+    required_evidence: list[str] = Field(default_factory=list, max_length=8)
+
+
+class EvidenceRequirement(BaseModel):
+    """One bounded fact needed to test one causal claim.
+
+    A requirement is the unit of work for an investigation.  It is deliberately
+    owned by the hypothesis rather than by an LLM response so a completed check
+    cannot be re-planned under a different label.
+    """
+
+    id: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=500)
+    status: Literal["pending", "completed", "unavailable", "duplicate"] = "pending"
+
+
 class Hypothesis(BaseModel):
     id: str = Field(default_factory=lambda: f"hyp_{uuid4().hex[:8]}")
     name: str = Field(min_length=1, max_length=80)
     description: str
     category: str
+    claim: CausalClaim | None = None
+    requirements: list[EvidenceRequirement] = Field(default_factory=list, max_length=2)
     research_scope: Literal["internal", "external"] = "internal"
-    # A portable contract between a causal claim and configured evidence sources.
+    # Configured agent IDs selected for this claim from their declared
+    # purpose/input contract. This replaces universal topic-name matching.
+    external_agent_ids: list[str] = Field(default_factory=list, max_length=8)
+    # Retained only so existing archives and configured research agents can be
+    # read. New investigation decisions use ``claim`` and agent purposes,
+    # rather than a fixed taxonomy of topic strings.
     evidence_topics: list[str] = Field(default_factory=list, max_length=12)
     confidence: float = Field(ge=0, le=1)
     supporting_evidence: list[str] = Field(default_factory=list)
@@ -162,6 +196,15 @@ class Evidence(BaseModel):
     # Premises establish the question's baseline; caveats establish a limitation.
     # Neither should be rendered as evidence for a causal hypothesis.
     scope: Literal["premise", "mechanism", "caveat"] = "mechanism"
+    # Whether this evidence comes from the source that directly records the
+    # claimed mechanism, or from an explicitly weaker substitute.
+    basis: Literal["direct", "proxy", "context"] = "direct"
+    # A causal finding has exactly one owner. Premises and caveats have none.
+    hypothesis_id: str | None = None
+    requirement_id: str | None = None
+    # ``claim_id`` and ``hypothesis_ids`` are retained to read historical
+    # archives. New live evidence uses the singular ownership fields above.
+    claim_id: str | None = None
     evidence_topics: list[str] = Field(default_factory=list, max_length=12)
     hypothesis_ids: list[str] = Field(default_factory=list)
     # Strict Structured Outputs cannot accept an open-ended JSON object here.
@@ -178,6 +221,7 @@ class Observation(BaseModel):
 class InvestigationStep(BaseModel):
     iteration: int = 0
     hypothesis_id: str | None = None
+    requirement_id: str | None = None
     action: str
     datasource_id: str | None = None
     rationale: str
@@ -241,6 +285,7 @@ class InvestigationStatus(str, Enum):
     WAITING_FOR_HUMAN = "waiting_for_human"
     COMPLETED = "completed"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    STOPPED = "stopped"
     FAILED = "failed"
 
 
@@ -300,6 +345,18 @@ class QueryScope(BaseModel):
     predicate_sql: str
 
 
+class QueryResultCacheEntry(BaseModel):
+    """A persisted, schema-versioned result of an already-executed query."""
+
+    key: str
+    datasource_id: str
+    schema_fingerprint: str | None = None
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    display_rows: list[dict[str, Any]] = Field(default_factory=list)
+    deterministic_summary: Any = None
+    resolved_entities: list[ResolvedEntityReference] = Field(default_factory=list)
+
+
 class InvestigationState(BaseModel):
     investigation_id: str
     # The graph checkpoint to resume. Follow-up turns use a distinct thread so they do not
@@ -341,6 +398,9 @@ class InvestigationState(BaseModel):
     # This is persisted with the conversation but deliberately excluded from every HTTP response.
     resolved_entities: list[ResolvedEntityReference] = Field(default_factory=list)
     query_scopes: list[QueryScope] = Field(default_factory=list)
+    # This is per investigation, survives resume, and is never shared with a
+    # different user's question or source schema.
+    query_result_cache: list[QueryResultCacheEntry] = Field(default_factory=list)
     iteration: int = 0
     query_count: int = 0
     external_call_count: int = 0
