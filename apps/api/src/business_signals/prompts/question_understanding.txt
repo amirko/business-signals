@@ -12,3 +12,8 @@ number of orders?” Use `measure` for that question; use `scope`, `period`, or 
 Do not mention formulas, database fields, tables, or data sources. Set request_type to direct_answer for a factual request such as a ranking, list,
 count, total, lookup, or description. Set it to investigation only when the user asks why a business result happened. Earlier answered clarifications
 are authoritative: reuse them for a follow-up unless the user explicitly changes them, and never ask the same question again.
+
+For an investigation, extract `premise_to_validate` when the question assumes a factual business result, change, condition, or comparison that must
+be true before its causes can be investigated. State the assumed fact in plain language, without guessing whether it is true. This is semantic, not a
+keyword exercise: identify the assertion regardless of how the user phrases it. Examples include a claimed increase, decrease, absence, improvement,
+failure, or comparison outcome. Use null only when the question has no factual starting point to verify.

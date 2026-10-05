@@ -18,6 +18,10 @@ For a before/after comparison, include the requested business metric's relative 
 points, not a decimal fraction: use -1.35 for a 1.35% decrease and -0.09 for a 0.09% decrease. Do not use that field for a possible cause such as payment failures,
 inventory, traffic, or price.
 
+When the latest observation has a baseline contract and `premise_to_validate` is supplied, set `premise_verdict`: `confirmed` only when the
+result directly supports that exact statement, `rejected` when it directly disproves it, or `inconclusive` when it cannot establish it. Set
+`not_applicable` for every other observation. Do not investigate causes when the baseline is rejected or inconclusive.
+
 Treat `scope_coverage` as authoritative, deterministic coverage evidence. If it shows a zero, one-record, or capped match, describe that as a caveat and limit claims to the
 matched scope. Never turn a one-store or one-entity measurement into a citywide, regional, product-group-wide, or channel-shift claim without direct measurement of the
 additional stores, entities, or channels. For external findings with `measurements`, compare only their provided baseline and comparison values; do not infer a before/after

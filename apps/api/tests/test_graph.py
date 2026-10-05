@@ -836,7 +836,7 @@ class RelationFilterRegistry:
 class FixtureLLM:
     async def structured(self, response_model, instruction: str, payload: dict):
         responses = {
-            QuestionUnderstanding: {"metric_definition": {"name": "revenue", "expression": "SUM(revenue)", "unit": "EUR", "confidence": 0.95}, "observations": ["Northern revenue declined"]},
+            QuestionUnderstanding: {"metric_definition": {"name": "revenue", "expression": "SUM(revenue)", "unit": "EUR", "confidence": 0.95}, "observations": ["Northern revenue declined"], "premise_to_validate": "Revenue was lower in the later period than in the earlier period."},
             HypothesisPlan: {"hypotheses": [
                 {"id": "hyp_stock", "name": "Inventory constraint", "description": "Stock availability constrained sales", "category": "inventory", "confidence": 0.45},
                 {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.35},
@@ -847,7 +847,7 @@ class FixtureLLM:
             EvidenceAssessment: {"evidence": [{"id": "ev_stock", "description": "Low available units coincide with lower revenue", "source": "analytics", "relationship": "direct", "confidence": 0.86, "hypothesis_ids": ["hyp_stock"]}], "hypotheses": [
                 {"id": "hyp_stock", "name": "Inventory constraint", "description": "Stock availability constrained sales", "category": "inventory", "confidence": 0.86, "status": "supported"},
                 {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.12, "status": "rejected"},
-            ], "confidence": 0.86},
+            ], "confidence": 0.86, "premise_verdict": "confirmed"},
             InvestigationDecision: {"action": "finish", "reason": "The fixture scenario has sufficient direct evidence."},
             Synthesis: {"analysis": {"likely_root_cause": "Stock availability constrained sales", "confidence": 0.86, "evidence": [{"id": "ev_stock", "description": "Low available units coincide with lower revenue", "source": "analytics", "relationship": "direct", "confidence": 0.86}], "rejected_hypotheses": [], "external_findings": [], "caveats": [], "summary": "Inventory is the leading explanation."}},
         }
@@ -949,6 +949,7 @@ class AmbiguousFixtureLLM(FixtureLLM):
                     },
                     "observations": ["The question does not specify the comparison region."],
                     "ambiguity": "Which region should the investigation use for the comparison?",
+                    "premise_to_validate": "Revenue was lower in the later period than in the earlier period.",
                 }
             )
         return await super().structured(response_model, instruction, payload)
@@ -974,6 +975,60 @@ class TrackUnambiguousPremiseValidationLLM(FixtureLLM):
 
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model in (QuestionUnderstanding, PremiseValidationPlan):
+            self.calls.append(response_model)
+        return await super().structured(response_model, instruction, payload)
+
+
+class RejectedPremiseLLM(FixtureLLM):
+    """A semantic premise can be rejected without relying on wording heuristics."""
+
+    def __init__(self) -> None:
+        self.investigation_plan_calls = 0
+        self.hypothesis_plan_calls = 0
+
+    async def structured(self, response_model, instruction: str, payload: dict):
+        if response_model is QuestionUnderstanding:
+            return QuestionUnderstanding.model_validate({
+                "metric_definition": {"name": "Units sold", "expression": "Total items sold", "unit": "units", "confidence": 0.95},
+                "premise_to_validate": "Outdoor-product unit sales in Milan were higher in July 2024 than in June 2024.",
+            })
+        if response_model is EvidenceAssessment:
+            return EvidenceAssessment.model_validate({
+                "evidence": [{
+                    "id": "baseline_rejected",
+                    "description": "The baseline comparison shows fewer units sold in July than in June.",
+                    "source": "analytics",
+                    "relationship": "direct",
+                    "confidence": 0.95,
+                    "scope": "premise",
+                }],
+                "hypotheses": [],
+                "confidence": 0.95,
+                "premise_verdict": "rejected",
+            })
+        if response_model is HypothesisPlan:
+            self.hypothesis_plan_calls += 1
+            raise AssertionError("Hypotheses must not be generated before the premise is validated")
+        if response_model is InvestigationPlan:
+            self.investigation_plan_calls += 1
+            raise AssertionError("Causal checks must not run after the premise is rejected")
+        return await super().structured(response_model, instruction, payload)
+
+
+class ConfirmedPremiseOrderingLLM(FixtureLLM):
+    """Captures the required baseline-before-hypotheses execution order."""
+
+    def __init__(self) -> None:
+        self.calls: list[type] = []
+
+    async def structured(self, response_model, instruction: str, payload: dict):
+        if response_model in {
+            QuestionUnderstanding,
+            PremiseValidationPlan,
+            QueryPlan,
+            EvidenceAssessment,
+            HypothesisPlan,
+        }:
             self.calls.append(response_model)
         return await super().structured(response_model, instruction, payload)
 
@@ -1129,6 +1184,38 @@ def test_cross_datasource_lookup_aliases_are_rejected_in_primary_sql() -> None:
         from business_signals.datasources.safety import validate_query_tables
 
         validate_query_tables(sql, {"public.sales_events"})
+
+
+def test_declared_cross_datasource_lookups_replace_only_neutral_planner_placeholders() -> None:
+    from business_signals.datasources.safety import validate_query_tables
+
+    engine = InvestigationEngine(DatasourceRegistry())
+    rewritten = engine._remove_planner_lookup_placeholders(
+        (
+            "SELECT * FROM public.sales_events "
+            "WHERE product_id IN (SELECT relationship_key FROM product_ids) "
+            "AND store_id IN (SELECT relationship_key FROM milan_stores)"
+        ),
+        [
+            CrossDatasourceLookup(
+                datasource_id="catalog",
+                relation_id="rel_product",
+                sql="SELECT id AS relationship_key FROM public.products",
+                purpose="Find selected products.",
+            ),
+            CrossDatasourceLookup(
+                datasource_id="catalog",
+                relation_id="rel_store",
+                sql="SELECT id AS relationship_key FROM public.stores",
+                purpose="Find selected stores.",
+            ),
+        ],
+        {"public.sales_events"},
+    )
+
+    assert "product_ids" not in rewritten
+    assert "milan_stores" not in rewritten
+    assert validate_query_tables(rewritten, {"public.sales_events"}) == rewritten
 
 
 @pytest.mark.asyncio
@@ -1363,6 +1450,59 @@ async def test_unambiguous_decline_skips_clarification_and_validates_immediately
     assert result.pending_human_question is None
     assert result.human_feedback == []
     assert llm.calls == [QuestionUnderstanding, PremiseValidationPlan]
+
+
+@pytest.mark.asyncio
+async def test_rejected_semantic_premise_finishes_before_any_causal_query() -> None:
+    registry = FakeRegistry()
+    llm = RejectedPremiseLLM()
+    engine = InvestigationEngine(registry, llm=llm)
+
+    result = InvestigationState.model_validate(
+        await engine.graph.ainvoke(
+            InvestigationState(
+                investigation_id="inv_rejected_rise_premise",
+                question="Why did outdoor-product sales in Milan rise in July 2024 compared with June?",
+                datasources=[registry.source.summary],
+            ),
+            config={"configurable": {"thread_id": "inv_rejected_rise_premise"}},
+        )
+    )
+
+    assert result.status is InvestigationStatus.COMPLETED
+    assert result.premise_status == "rejected"
+    assert result.final_analysis and result.final_analysis.likely_root_cause == "Reported starting point was not found"
+    assert llm.hypothesis_plan_calls == 0
+    assert llm.investigation_plan_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmed_premise_generates_hypotheses_only_after_baseline_assessment() -> None:
+    registry = FakeRegistry()
+    llm = ConfirmedPremiseOrderingLLM()
+    engine = InvestigationEngine(registry, llm=llm)
+
+    result = InvestigationState.model_validate(
+        await engine.graph.ainvoke(
+            InvestigationState(
+                investigation_id="inv_confirmed_premise",
+                question="Why did northern revenue fall?",
+                datasources=[registry.source.summary],
+            ),
+            config={"configurable": {"thread_id": "inv_confirmed_premise"}},
+        )
+    )
+
+    baseline_assessment = llm.calls.index(EvidenceAssessment)
+    hypothesis_generation = llm.calls.index(HypothesisPlan)
+    assert result.premise_status == "confirmed"
+    assert llm.calls[:baseline_assessment + 1] == [
+        QuestionUnderstanding,
+        PremiseValidationPlan,
+        QueryPlan,
+        EvidenceAssessment,
+    ]
+    assert hypothesis_generation > baseline_assessment
 
 
 @pytest.mark.asyncio
@@ -2209,7 +2349,7 @@ def test_query_cache_is_scoped_to_the_final_sql_and_source_schema_version() -> N
 
 
 @pytest.mark.asyncio
-async def test_direct_evidence_rejecting_every_decline_hypothesis_finishes_with_no_decline() -> None:
+async def test_rejected_premise_finishes_without_causal_synthesis() -> None:
     registry = FakeRegistry()
     engine = InvestigationEngine(registry, llm=FixtureLLM())
     hypotheses = [
@@ -2221,6 +2361,8 @@ async def test_direct_evidence_rejecting_every_decline_hypothesis_finishes_with_
             "investigation_id": "inv_no_decline",
             "question": "Did sales decline in the last three months of 2024?",
             "datasources": [registry.source.summary.model_dump()],
+            "premise_to_validate": "Sales declined in the last three months of 2024.",
+            "premise_status": "rejected",
             "hypotheses": hypotheses,
             "evidence": [{
                 "id": "ev_totals",
@@ -2237,8 +2379,8 @@ async def test_direct_evidence_rejecting_every_decline_hypothesis_finishes_with_
     result = await engine._synthesize(state)
 
     assert decision["next_action"] == "finish"
-    assert result["final_analysis"].likely_root_cause == "No overall decline found"
-    assert "no decline to explain" in result["final_analysis"].summary
+    assert result["final_analysis"].likely_root_cause == "Reported starting point was not found"
+    assert "no validated result to explain" in result["final_analysis"].summary
     assert result["conversation_turns"][-1].question == state.question
     assert result["conversation_turns"][-1].answer == result["final_analysis"]
 
@@ -2252,6 +2394,8 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
             "investigation_id": "inv_no_material_decline",
             "question": "Did sales decline in the last three months of 2024?",
             "datasources": [registry.source.summary.model_dump()],
+            "premise_to_validate": "Sales changed in the last three months of 2024.",
+            "premise_status": "confirmed",
             "hypotheses": [
                 {
                     "id": "hyp_demand",
@@ -2277,17 +2421,19 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
     result = await engine._synthesize(state)
 
     assert decision["next_action"] == "finish"
-    assert result["final_analysis"].likely_root_cause == "No meaningful overall decrease found"
+    assert result["final_analysis"].likely_root_cause == "No meaningful overall change found"
     assert "1.0% negligibility threshold" in result["final_analysis"].summary
     assert result["conversation_turns"][-1].question == state.question
 
 
-def test_positive_premise_measurement_finishes_a_reported_decline_before_causal_checks() -> None:
+def test_rejected_premise_does_not_request_a_second_baseline_check() -> None:
     engine = InvestigationEngine(DatasourceRegistry())
     state = InvestigationState(
         investigation_id="inv_premise_increase",
-        question="Why did sales fall in July?",
+        question="Why did sales change in July?",
         datasources=[],
+        premise_to_validate="Sales fell in July.",
+        premise_status="rejected",
         evidence=[Evidence(
             description="Sales increased in July.",
             source="analytics",
@@ -2298,16 +2444,18 @@ def test_positive_premise_measurement_finishes_a_reported_decline_before_causal_
         )],
     )
 
-    assert engine._no_material_decline(state)
+    assert not engine._requires_premise_validation(state)
     assert engine._route_after_hypothesis_generation(state) == "select_investigation"
 
 
-def test_reported_decline_requires_a_premise_check_before_hypothesis_work() -> None:
+def test_reported_premise_requires_a_check_before_hypothesis_work() -> None:
     engine = InvestigationEngine(DatasourceRegistry())
     state = InvestigationState(
         investigation_id="inv_premise_required",
-        question="Why did sales fall in July?",
+        question="Why did sales improve in July?",
         datasources=[],
+        premise_to_validate="Sales improved in July.",
+        premise_status="pending",
     )
 
     assert engine._route_after_hypothesis_generation(state) == "validate_premise"
@@ -2459,6 +2607,37 @@ async def test_failed_query_is_contained_to_its_hypothesis() -> None:
     assert any(event.type == "QueryFailed" for event in events)
     failed_state = state.model_copy(update=result)
     assert engine._route_after_execution(failed_state) == "decide"
+
+
+@pytest.mark.asyncio
+async def test_failed_premise_check_ends_without_starting_causal_work() -> None:
+    registry = FailingRegistry()
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    engine = InvestigationEngine(registry, llm=RetryingLLM(), event_sink=capture)
+    state = InvestigationState(
+        investigation_id="inv_failed_premise_check",
+        question="Why did revenue change?",
+        datasources=[registry.source.summary],
+        premise_to_validate="Revenue changed during the requested period.",
+        premise_status="pending",
+        pending_step={
+            "hypothesis_id": None,
+            "action": "Validate the reported business change.",
+            "datasource_id": "analytics",
+            "rationale": "Check the factual starting point first.",
+        },
+    )
+
+    result = await engine._execute(state)
+
+    assert result["pending_step"] is None
+    assert result["premise_status"] == "inconclusive"
+    assert result["next_action"] == "finish"
+    assert any(event.type == "QueryFailed" for event in events)
 
 
 @pytest.mark.asyncio

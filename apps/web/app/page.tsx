@@ -53,6 +53,8 @@ type SavedInvestigation = {
   evidence: Evidence[];
   human_feedback: ConversationFeedback[];
   pending_human_question: string | null;
+  premise_to_validate: string | null;
+  premise_status: 'not_needed' | 'pending' | 'confirmed' | 'rejected' | 'inconclusive';
   final_analysis: FinalAnalysis | null;
   conversation_turns: { question: string; answer: FinalAnalysis; created_at: string }[];
 };
@@ -287,6 +289,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
   const [followUpResponse, setFollowUpResponse] = useState('');
   const [clarificationQuestion, setClarificationQuestion] = useState<string | null>(null);
   const [clarificationResponse, setClarificationResponse] = useState('');
+  const [premiseValidation, setPremiseValidation] = useState<string | null>(null);
   const [switchingClarification, setSwitchingClarification] = useState(false);
   const [replacementQuestion, setReplacementQuestion] = useState('');
   const [clarifications, setClarifications] = useState<Clarification[]>([]);
@@ -332,6 +335,16 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
   };
 
   const handleEvent = (event: InvestigationEvent) => {
+    if (event.type === 'DatasourceSelected' && !event.data.hypothesis_id) {
+      const premise = typeof event.data.premise_to_validate === 'string' ? event.data.premise_to_validate : null;
+      if (premise) setPremiseValidation(premise);
+    }
+    if (
+      !event.data.hypothesis_id
+      && (event.type === 'QueryCompleted' || event.type === 'QueryFailed' || event.type === 'EvidenceFound')
+    ) {
+      setPremiseValidation(null);
+    }
     if ((event.type === 'HypothesisCreated' || event.type === 'HypothesisUpdated') && event.data.hypothesis) {
       const hypothesis = event.data.hypothesis as Hypothesis;
       setHypotheses((current) => current.some((item) => item.id === hypothesis.id)
@@ -381,6 +394,10 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       );
     }
     if (event.type === 'HumanInputReceived') {
+      // Receipt is authoritative: an old pending form must not remain editable
+      // while the resumed graph is working.
+      setClarificationQuestion(null);
+      setClarificationResponse('');
       setRunning(true);
     }
     if (event.type === 'InvestigationCompleted') {
@@ -432,15 +449,25 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       setEvidence(latest.evidence);
       setConversationTurns(latest.conversation_turns);
       setConversationFeedback(latest.human_feedback);
-      answeredClarificationQuestions.current = new Set(latest.human_feedback.map((item) => item.question));
+      latest.human_feedback.forEach((item) => answeredClarificationQuestions.current.add(item.question));
+      const staleAnsweredPause = Boolean(
+        latest.status === 'waiting_for_human'
+        && latest.pending_human_question
+        && answeredClarificationQuestions.current.has(latest.pending_human_question),
+      );
       setClarifications([
         ...latest.human_feedback.map((item) => ({
           question: item.question, response: item.response, hypothesisId: item.hypothesis_id ?? undefined,
         })),
-        ...(latest.status === 'waiting_for_human' && latest.pending_human_question ? [{ question: latest.pending_human_question }] : []),
+        ...(latest.status === 'waiting_for_human' && latest.pending_human_question && !staleAnsweredPause
+          ? [{ question: latest.pending_human_question }]
+          : []),
       ]);
-      setClarificationQuestion(latest.status === 'waiting_for_human' ? latest.pending_human_question : null);
+      setClarificationQuestion(
+        latest.status === 'waiting_for_human' && !staleAnsweredPause ? latest.pending_human_question : null,
+      );
       setClarificationResponse('');
+      setPremiseValidation(latest.premise_status === 'pending' ? latest.premise_to_validate : null);
       // A clarification pauses before a conversation turn is completed, so the submitted
       // question is not yet in conversation_turns. Keep it visible above the clarification.
       setPendingConversationQuestion(
@@ -450,6 +477,13 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       );
       setFinalAnalysis(latest.final_analysis);
       setFollowUpResponse(latest.final_analysis?.follow_up_question ?? '');
+      if (staleAnsweredPause) {
+        // The response has already been accepted, but this snapshot was taken while
+        // the server still exposed the old pause. Keep polling instead of restoring
+        // an editable form that strands the original browser tab.
+        setRunning(true);
+        return false;
+      }
       if (latest.status === 'queued' || latest.status === 'running') {
         // Creation is asynchronous: a newly accepted investigation is queued
         // briefly before the graph marks it running.  Both are live states.
@@ -517,12 +551,12 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
     // Keep reconciling an active turn even if an interrupted stream has
     // temporarily cleared `running`; otherwise the original tab can remain
     // stale while a newly opened tab correctly reads the persisted state.
-    if (!investigationId || clarificationQuestion || finalAnalysis || error) return;
+    if (!investigationId || finalAnalysis || error) return;
     const epoch = investigationEpoch.current;
     void reconcileFinishedInvestigation(investigationId, epoch);
     const timer = window.setInterval(() => void reconcileFinishedInvestigation(investigationId, epoch), 2500);
     return () => window.clearInterval(timer);
-  }, [clarificationQuestion, error, finalAnalysis, investigationId]);
+  }, [error, finalAnalysis, investigationId]);
 
   useEffect(() => {
     if (!resumedInvestigation) return;
@@ -559,6 +593,9 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
     setConversationFeedback(resumedInvestigation.human_feedback);
     setPendingConversationQuestion(resumedInvestigation.current_conversation_question);
     setInvestigationId(resumedInvestigation.investigation_id);
+    setPremiseValidation(
+      resumedInvestigation.premise_status === 'pending' ? resumedInvestigation.premise_to_validate : null,
+    );
     setFollowUpResponse(resumedInvestigation.final_analysis?.follow_up_question ?? '');
     setClarifications([
       ...resumedInvestigation.human_feedback.map((item) => ({
@@ -608,7 +645,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
     investigationEpoch.current += 1;
     terminalEpoch.current = null;
     answeredClarificationQuestions.current = new Set();
-    setError(''); setStatusMessage(''); setStopping(false); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setHypothesisActivity({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setConversationTurns([]); setConversationFeedback([]); setPendingConversationQuestion(question.trim()); setInvestigationId(null); setFollowUpResponse(''); setClarificationQuestion(null); setClarificationResponse(''); setSwitchingClarification(false); setReplacementQuestion(''); setClarifications([]); setRunning(true); eventCursor.current = 0; stream.current?.close();
+    setError(''); setStatusMessage(''); setStopping(false); setHypotheses([]); setEvidence([]); setHypothesisSteps({}); setHypothesisActivity({}); setExpandedHypotheses({}); setActiveHypothesisId(null); setFinalAnalysis(null); setConversationTurns([]); setConversationFeedback([]); setPendingConversationQuestion(question.trim()); setInvestigationId(null); setFollowUpResponse(''); setClarificationQuestion(null); setClarificationResponse(''); setPremiseValidation(null); setSwitchingClarification(false); setReplacementQuestion(''); setClarifications([]); setRunning(true); eventCursor.current = 0; stream.current?.close();
     try {
       const response = await fetch(`${apiUrl}/api/investigations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question, datasource_ids: selectedDatasourceIds }) });
       if (!response.ok) {
@@ -661,6 +698,12 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
     investigationEpoch.current += 1;
     terminalEpoch.current = null;
     const answeredQuestion = clarificationQuestion;
+    if (answeredQuestion) answeredClarificationQuestions.current.add(answeredQuestion);
+    // The previous EventSource can still replay the already-answered human
+    // input event while this request is in flight. Close it before changing
+    // the UI state; a fresh stream begins from the saved event cursor below.
+    stream.current?.close();
+    stream.current = null;
     // Move straight into the live waiting state. The answer has been submitted,
     // so leaving an editable clarification form on screen invites duplicate input.
     setError('');
@@ -678,28 +721,34 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
       setEvidence(updated.evidence);
       setConversationTurns(updated.conversation_turns);
     setConversationFeedback(updated.human_feedback);
-      answeredClarificationQuestions.current = new Set(updated.human_feedback.map((item) => item.question));
+      updated.human_feedback.forEach((item) => answeredClarificationQuestions.current.add(item.question));
       setClarifications(updated.human_feedback.map((item) => ({
         question: item.question, response: item.response, hypothesisId: item.hypothesis_id ?? undefined,
       })));
       setPendingConversationQuestion(updated.current_conversation_question ?? updated.original_question ?? updated.question);
       setFinalAnalysis(updated.final_analysis);
-      setClarificationQuestion(updated.status === 'waiting_for_human' ? updated.pending_human_question : null);
+      const staleAnsweredPause = Boolean(
+        updated.status === 'waiting_for_human'
+        && updated.pending_human_question
+        && answeredClarificationQuestions.current.has(updated.pending_human_question),
+      );
+      setClarificationQuestion(
+        updated.status === 'waiting_for_human' && !staleAnsweredPause ? updated.pending_human_question : null,
+      );
       setClarificationResponse(''); setSwitchingClarification(false); setReplacementQuestion('');
-      const isActive = updated.status === 'queued' || updated.status === 'running';
-      setRunning(isActive);
-      // The POST response is the authoritative snapshot. Start the replacement stream
-      // from now so it cannot replay the just-answered pause; reconciliation covers the
-      // small gap before this EventSource is connected.
-      if (isActive) {
-        // Replay events after the last cursor rather than using a live-only
-        // subscription. A fast graph can finish before the SSE connection is
-        // established; retained events and polling make that completion visible.
-        openInvestigationStream(investigationId);
-        reconcileUntilTerminal(investigationId);
-      }
+      setPremiseValidation(updated.premise_status === 'pending' ? updated.premise_to_validate : null);
+      setRunning(staleAnsweredPause || updated.status === 'queued' || updated.status === 'running');
+      // The response can race a very fast graph transition (for example,
+      // running -> completed or running -> another clarification). Always
+      // reconnect and reconcile after an accepted answer instead of trusting
+      // this one snapshot to decide whether there is more work to display.
+      // This is also the recovery path for a tab whose prior EventSource was
+      // closed while the clarification was submitted.
+      openInvestigationStream(investigationId);
+      reconcileUntilTerminal(investigationId);
     } catch (cause) {
       console.error('Could not submit clarification', cause);
+      if (answeredQuestion) answeredClarificationQuestions.current.delete(answeredQuestion);
       setClarificationQuestion(answeredQuestion);
       setRunning(false);
       setError('The clarification could not be submitted. Check the backend logs and try again.');
@@ -821,6 +870,10 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
 
         <ConversationTranscript turns={conversationTurns} feedback={conversationFeedback} pendingQuestion={questionAwaitingClarification} omitLatestAnswer={finalAnalysis !== null} isInvestigating={running} />
         {clarificationQuestion && <section className="clarification-stage active-clarification"><span className="section-kicker">CLARIFICATION</span>{clarifications.filter((item) => item.question === clarificationQuestion).map(renderClarification)}</section>}
+        {premiseValidation && premiseEvidence.length === 0 && <section className="premise-validation premise-validation-pending" aria-live="polite" aria-label="Baseline validation in progress">
+          <span className="section-kicker">BASELINE CHECK</span>
+          <div className="thinking-row"><span className="thinking-icon"><RefreshCw className="spin" /></span><div><strong>Validating that {premiseValidation}</strong></div></div>
+        </section>}
         {premiseEvidence.length > 0 && <section className="premise-validation" aria-label="Baseline validation">
           <span className="section-kicker">BASELINE CHECK</span><h2>Did the reported change occur?</h2>
           {premiseEvidence.map((item) => <article className="premise-evidence" key={item.id}><code>{item.id}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}

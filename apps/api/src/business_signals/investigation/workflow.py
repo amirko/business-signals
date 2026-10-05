@@ -161,6 +161,7 @@ class InvestigationEngine(DirectAnswerMixin):
             {
                 "request_human": "request_human",
                 "answer_directly": "answer_directly",
+                "validate_premise": "validate_premise",
                 "generate_hypotheses": "generate_hypotheses",
             },
         )
@@ -169,6 +170,7 @@ class InvestigationEngine(DirectAnswerMixin):
             self._route_after_human,
             {
                 "generate_hypotheses": "generate_hypotheses",
+                "validate_premise": "validate_premise",
                 "answer_directly": "answer_directly",
                 "select_investigation": "select_investigation",
             },
@@ -193,7 +195,11 @@ class InvestigationEngine(DirectAnswerMixin):
         graph.add_conditional_edges(
             "interpret",
             self._route_after_interpretation,
-            {"request_human": "request_human", "decide": "decide"},
+            {
+                "request_human": "request_human",
+                "generate_hypotheses": "generate_hypotheses",
+                "decide": "decide",
+            },
         )
         graph.add_conditional_edges(
             "decide",
@@ -313,6 +319,8 @@ class InvestigationEngine(DirectAnswerMixin):
             "question": state.question,
             "metric": state.metric_definition.model_dump(mode="json") if state.metric_definition else None,
             "analysis_scope": state.analysis_scope.model_dump(mode="json") if state.analysis_scope else None,
+            "premise_to_validate": state.premise_to_validate,
+            "premise_status": state.premise_status,
             "scope_coverage": [coverage.model_dump(mode="json") for coverage in state.scope_coverage],
             "hypotheses": [h.model_dump(mode="json") for h in state.hypotheses],
             "evidence": [e.model_dump(mode="json") for e in state.evidence],
@@ -471,25 +479,6 @@ class InvestigationEngine(DirectAnswerMixin):
                 update = update.model_copy(update={"status": status, "confidence": min(update.confidence, 0.74)})
             merged.append(update)
         return merged
-
-    @staticmethod
-    def _premise_is_directly_rejected(
-        question: str, hypotheses: list[Hypothesis], evidence: list[Evidence]
-    ) -> bool:
-        """End a yes/no decline investigation once direct evidence rejects every explanation."""
-        asks_about_decline = InvestigationEngine._asks_about_decline(question)
-        has_direct_measurement = any(
-            item.relationship == "direct" and item.confidence >= 0.75 and item.hypothesis_ids
-            for item in evidence
-        )
-        return bool(hypotheses) and asks_about_decline and has_direct_measurement and all(
-            hypothesis.status == HypothesisStatus.REJECTED for hypothesis in hypotheses
-        )
-
-    @staticmethod
-    def _asks_about_decline(question: str) -> bool:
-        decline_terms = ("decline", "declined", "decrease", "decreased", "drop", "dropped", "fall", "fell")
-        return any(term in question.casefold() for term in decline_terms)
 
     @staticmethod
     def _is_direct_answer_request(question: str) -> bool:
@@ -685,13 +674,12 @@ class InvestigationEngine(DirectAnswerMixin):
         return changes
 
     def _no_material_decline(self, state: InvestigationState) -> bool:
-        if not self._asks_about_decline(state.question):
+        if state.premise_status != "confirmed":
             return False
         changes = self._measured_metric_percentage_changes(state.evidence)
-        # A non-negative value is direct evidence that the reported decline did
-        # not occur. A small negative value is treated as negligible according
-        # to the configured materiality threshold.
-        return bool(changes) and all(change >= -settings.negligiblity_threshold_percent for change in changes)
+        # The semantic premise assessment establishes direction; this is only
+        # the materiality guard for a verified but negligible change.
+        return bool(changes) and all(abs(change) <= settings.negligiblity_threshold_percent for change in changes)
 
     @staticmethod
     def _scope_caveats(state: InvestigationState) -> list[str]:
@@ -777,12 +765,16 @@ class InvestigationEngine(DirectAnswerMixin):
         return {
             "metric_definition": result.metric_definition,
             "analysis_scope": analysis_scope,
+            "premise_to_validate": result.premise_to_validate if request_type == "investigation" else None,
+            "premise_status": (
+                "pending" if request_type == "investigation" and result.premise_to_validate else "not_needed"
+            ),
             "observations": observations,
             "request_type": request_type,
             "pending_human_question": ambiguity,
             "human_resume_node": (
                 "answer_directly" if ambiguity and request_type == "direct_answer"
-                else "generate_hypotheses" if ambiguity else None
+                else "validate_premise" if ambiguity and result.premise_to_validate else "generate_hypotheses" if ambiguity else None
             ),
             "status": InvestigationStatus.WAITING_FOR_HUMAN if ambiguity else InvestigationStatus.RUNNING,
             "paused_at": datetime.now(UTC) if ambiguity else None,
@@ -792,6 +784,8 @@ class InvestigationEngine(DirectAnswerMixin):
     def _route_after_understanding(state: InvestigationState) -> str:
         if state.pending_human_question:
             return "request_human"
+        if state.premise_status == "pending":
+            return "validate_premise"
         return "answer_directly" if state.request_type == "direct_answer" else "generate_hypotheses"
 
     @staticmethod
@@ -802,7 +796,11 @@ class InvestigationEngine(DirectAnswerMixin):
 
     @staticmethod
     def _route_after_interpretation(state: InvestigationState) -> str:
-        return "request_human" if state.pending_human_question else "decide"
+        if state.pending_human_question:
+            return "request_human"
+        if state.pending_step is not None and state.pending_step.hypothesis_id is None and state.premise_status == "confirmed":
+            return "generate_hypotheses"
+        return "decide"
 
     @staticmethod
     def _route_after_external_research(state: InvestigationState) -> str:
@@ -870,10 +868,8 @@ class InvestigationEngine(DirectAnswerMixin):
 
     @classmethod
     def _requires_premise_validation(cls, state: InvestigationState) -> bool:
-        """Validate a reported directional change before looking for its cause."""
-        if not cls._asks_about_decline(state.question):
-            return False
-        return not any(item.scope == "premise" for item in state.evidence)
+        """Validate any model-extracted factual premise before looking for causes."""
+        return state.request_type == "investigation" and state.premise_status == "pending"
 
     @classmethod
     def _route_after_hypothesis_generation(cls, state: InvestigationState) -> str:
@@ -888,6 +884,7 @@ class InvestigationEngine(DirectAnswerMixin):
             {
                 **self._state_payload(state),
                 "datasources": metadata,
+                "premise_to_validate": state.premise_to_validate,
             },
         )
         valid_datasource_ids = {source.id for source in state.datasources}
@@ -907,8 +904,9 @@ class InvestigationEngine(DirectAnswerMixin):
         await self._emit(
             state,
             "DatasourceSelected",
-            "Checking whether the reported change occurred before investigating its causes.",
+            f"Validating that {state.premise_to_validate or 'the reported business result occurred'}.",
             datasource_id=datasource_id,
+            premise_to_validate=state.premise_to_validate,
         )
         return {"pending_step": step, "current_focus": None, "iteration": state.iteration + 1}
 
@@ -1201,6 +1199,65 @@ class InvestigationEngine(DirectAnswerMixin):
                 "Cross-datasource queries must declare every approved relationship in the query contract"
             )
 
+    @staticmethod
+    def _remove_planner_lookup_placeholders(
+        sql: str, lookups: list[CrossDatasourceLookup], allowed_tables: set[str]
+    ) -> str:
+        """Remove only model-only lookup placeholders before trusted filters are bound.
+
+        A cross-datasource lookup is executed separately, then its approved
+        relationship values are applied by ``_apply_cross_datasource_lookups``.
+        Some models nevertheless emit ``field IN (SELECT relationship_key FROM
+        placeholder)`` in the primary SQL.  That placeholder is neither a CTE
+        nor a real table and must not reach the datasource.  This accepts only
+        the exact neutral-key shape, only when declared lookups exist; every
+        other unknown table remains a normal safety rejection.
+        """
+        if not lookups:
+            return sql
+        try:
+            statement = sqlglot.parse_one(sql, read="postgres")
+        except sqlglot.errors.ParseError as exc:
+            raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
+
+        allowed_unqualified = {table.rsplit(".", 1)[-1] for table in allowed_tables}
+        removed = 0
+
+        def is_placeholder(expression: exp.Expression) -> bool:
+            nonlocal removed
+            if not isinstance(expression, exp.In):
+                return False
+            query = expression.args.get("query")
+            if not isinstance(query, exp.Subquery) or not isinstance(query.this, exp.Select):
+                return False
+            select = query.this
+            if len(select.expressions) != 1:
+                return False
+            projection = select.expressions[0]
+            if not isinstance(projection, exp.Column) or projection.name != CROSS_DATASOURCE_LOOKUP_KEY:
+                return False
+            tables = list(select.find_all(exp.Table))
+            if len(tables) != 1:
+                return False
+            table = tables[0]
+            qualified_name = f"{table.db}.{table.name}" if table.db else table.name
+            if qualified_name in allowed_tables or table.name in allowed_unqualified:
+                return False
+            removed += 1
+            return True
+
+        rewritten = statement.transform(
+            lambda expression: exp.Boolean(this=True) if is_placeholder(expression) else expression
+        )
+        if removed > len(lookups):
+            raise UnsafeQueryError("Primary SQL contains more lookup placeholders than approved cross-datasource lookups")
+        if removed:
+            logger.warning(
+                "Removed %d planner-only cross-datasource lookup predicates; approved lookups will bind the filters",
+                removed,
+            )
+        return rewritten.sql(dialect="postgres")
+
     async def _execute(self, state: InvestigationState) -> dict[str, Any]:
         if state.pending_step is None:
             raise RuntimeError("No investigation step was selected")
@@ -1250,6 +1307,9 @@ class InvestigationEngine(DirectAnswerMixin):
         cached_result: QueryResultCacheEntry | None = None
         for attempt in range(2):
             try:
+                sql = self._remove_planner_lookup_placeholders(
+                    sql, result.cross_datasource_lookups, allowed_tables
+                )
                 sql = validate_query_tables(
                     validate_read_query(self._case_insensitive_text_filters(sql)),
                     allowed_tables,
@@ -1410,8 +1470,31 @@ class InvestigationEngine(DirectAnswerMixin):
     async def _record_step_failure(self, state: InvestigationState, exc: Exception) -> dict[str, Any]:
         """Contain an expected datasource failure to the hypothesis being tested."""
         step = state.pending_step
-        if step is None or step.hypothesis_id is None:
+        if step is None:
             raise exc
+        if step.hypothesis_id is None:
+            logger.exception(
+                "Premise-validation check failed; ending before causal investigation: investigation=%s datasource=%s",
+                state.investigation_id,
+                step.datasource_id,
+            )
+            message = "The starting business result could not be verified because its data check was unavailable."
+            await self._emit(
+                state,
+                "QueryFailed",
+                message,
+                datasource_id=step.datasource_id,
+                error_code=type(exc).__name__,
+            )
+            return {
+                "investigation_history": [*state.investigation_history, step],
+                "failed_checks": [*state.failed_checks, message],
+                "pending_step": None,
+                "current_focus": None,
+                "premise_status": "inconclusive",
+                "next_action": "finish",
+                "status": InvestigationStatus.RUNNING,
+            }
         logger.exception(
             "Investigation check failed; continuing with other hypotheses: investigation=%s hypothesis=%s datasource=%s",
             state.investigation_id,
@@ -1725,9 +1808,19 @@ class InvestigationEngine(DirectAnswerMixin):
         known_evidence = {item.id for item in state.evidence}
         new_evidence = [item for item in scoped_evidence if item.id not in known_evidence]
         evidence = [*state.evidence, *new_evidence]
-        premise_rejected = self._premise_is_directly_rejected(state.question, hypotheses, evidence)
+        is_premise_check = state.pending_step is not None and state.pending_step.hypothesis_id is None
+        premise_status = state.premise_status
+        if is_premise_check:
+            # A baseline has to produce an explicit semantic verdict.  If the
+            # data cannot establish the premise, do not start causal work on
+            # an unproven story.
+            premise_status = (
+                result.premise_verdict
+                if result.premise_verdict in {"confirmed", "rejected", "inconclusive"}
+                else "inconclusive"
+            )
         no_material_decline = self._no_material_decline(
-            state.model_copy(update={"hypotheses": hypotheses, "evidence": evidence})
+            state.model_copy(update={"hypotheses": hypotheses, "evidence": evidence, "premise_status": premise_status})
         )
         ambiguity = self._clarification_to_request(state, result.ambiguity)
         for item in new_evidence:
@@ -1745,16 +1838,33 @@ class InvestigationEngine(DirectAnswerMixin):
             "evidence": evidence,
             "hypotheses": hypotheses,
             "confidence": result.confidence,
-            "pending_human_question": None if premise_rejected or no_material_decline else ambiguity,
+            "premise_status": premise_status,
+            "pending_human_question": (
+                None
+                if no_material_decline or (is_premise_check and premise_status != "confirmed")
+                else ambiguity
+            ),
             "human_resume_node": (
-                "select_investigation" if ambiguity and not premise_rejected and not no_material_decline else None
+                (
+                    "generate_hypotheses"
+                    if is_premise_check
+                    else "select_investigation"
+                )
+                if ambiguity and not no_material_decline
+                and (not is_premise_check or premise_status == "confirmed")
+                else None
             ),
             "status": (
                 InvestigationStatus.WAITING_FOR_HUMAN
-                if ambiguity and not premise_rejected and not no_material_decline
+                if ambiguity and not no_material_decline
+                and (not is_premise_check or premise_status == "confirmed")
                 else InvestigationStatus.RUNNING
             ),
-            "paused_at": datetime.now(UTC) if ambiguity and not premise_rejected and not no_material_decline else None,
+            "paused_at": (
+                datetime.now(UTC)
+                if ambiguity and not no_material_decline and (not is_premise_check or premise_status == "confirmed")
+                else None
+            ),
         }
 
     def _budget_exhausted(self, state: InvestigationState) -> bool:
@@ -1812,14 +1922,19 @@ class InvestigationEngine(DirectAnswerMixin):
         }
 
     async def _decide(self, state: InvestigationState) -> dict[str, Any]:
+        if state.premise_status in {"rejected", "inconclusive"}:
+            logger.info(
+                "Finishing investigation because the reported premise was %s: investigation=%s premise=%r",
+                state.premise_status,
+                state.investigation_id,
+                state.premise_to_validate,
+            )
+            return {"next_action": "finish", "status": InvestigationStatus.RUNNING}
         if self._no_material_decline(state):
             logger.info(
                 "Finishing investigation because the measured change is within the %.2f%% materiality threshold",
                 settings.negligiblity_threshold_percent,
             )
-            return {"next_action": "finish", "status": InvestigationStatus.RUNNING}
-        if self._premise_is_directly_rejected(state.question, state.hypotheses, state.evidence):
-            logger.info("Finishing investigation because direct evidence rejects the reported decline")
             return {"next_action": "finish", "status": InvestigationStatus.RUNNING}
         supported = [
             h for h in state.hypotheses if h.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}
@@ -1978,33 +2093,30 @@ class InvestigationEngine(DirectAnswerMixin):
                 "conversation_turns": conversation_turns,
                 "status": InvestigationStatus.COMPLETED,
             }
-        if self._no_material_decline(state):
-            direct_evidence = [
-                item
-                for item in state.evidence
-                if item.relationship == "direct" and (item.scope == "premise" or item.hypothesis_ids)
-            ]
-            changes = self._measured_metric_percentage_changes(direct_evidence)
-            smallest_change = min(changes, key=abs)
-            strongest_evidence = max(direct_evidence, key=lambda item: item.confidence)
-            no_decline = smallest_change >= 0
+        if state.premise_status in {"rejected", "inconclusive"}:
+            premise_evidence = [item for item in state.evidence if item.scope == "premise"]
+            strongest_evidence = max(premise_evidence, key=lambda item: item.confidence, default=None)
+            was_rejected = state.premise_status == "rejected"
+            outcome = "was not supported" if was_rejected else "could not be confirmed"
+            evidence_sentence = f" {strongest_evidence.description}" if strongest_evidence else ""
             analysis = FinalAnalysis(
-                likely_root_cause="No overall decline found" if no_decline else "No meaningful overall decrease found",
-                confidence=strongest_evidence.confidence,
-                evidence=direct_evidence,
-                rejected_hypotheses=[
-                    hypothesis for hypothesis in state.hypotheses if hypothesis.status == HypothesisStatus.REJECTED
-                ],
-                external_findings=state.external_findings,
-                caveats=[],
+                likely_root_cause=(
+                    "Reported starting point was not found"
+                    if was_rejected
+                    else "Reported starting point could not be verified"
+                ),
+                confidence=strongest_evidence.confidence if strongest_evidence else 0.6,
+                evidence=premise_evidence,
+                rejected_hypotheses=[],
+                external_findings=[],
+                caveats=(
+                    ["The baseline data check was unavailable, so no causal investigation was started."]
+                    if state.premise_status == "inconclusive" and state.failed_checks
+                    else []
+                ),
                 summary=(
-                    f"The measured change was {smallest_change:+.2f}%, so the requested overall decline did not occur."
-                    if no_decline
-                    else (
-                        f"The measured change ({smallest_change:+.2f}%) is within the "
-                        f"{settings.negligiblity_threshold_percent:.1f}% negligibility threshold, so it is too "
-                        "small to treat as a meaningful overall decrease."
-                    )
+                    f"The factual starting point for this investigation — {state.premise_to_validate or 'the reported business result'} — "
+                    f"{outcome} by the baseline check, so there is no validated result to explain." + evidence_sentence
                 ),
             )
             analysis = analysis.model_copy(update={"follow_up_question": await self._contextual_follow_up_question(state)})
@@ -2025,23 +2137,28 @@ class InvestigationEngine(DirectAnswerMixin):
                 "conversation_turns": conversation_turns,
                 "status": InvestigationStatus.COMPLETED,
             }
-        if self._premise_is_directly_rejected(state.question, state.hypotheses, state.evidence):
+        if self._no_material_decline(state):
             direct_evidence = [
                 item
                 for item in state.evidence
-                if item.relationship == "direct" and item.confidence >= 0.75 and item.hypothesis_ids
+                if item.relationship == "direct" and (item.scope == "premise" or item.hypothesis_ids)
             ]
+            changes = self._measured_metric_percentage_changes(direct_evidence)
+            smallest_change = min(changes, key=abs)
             strongest_evidence = max(direct_evidence, key=lambda item: item.confidence)
             analysis = FinalAnalysis(
-                likely_root_cause="No overall decline found",
+                likely_root_cause="No meaningful overall change found",
                 confidence=strongest_evidence.confidence,
                 evidence=direct_evidence,
-                rejected_hypotheses=state.hypotheses,
+                rejected_hypotheses=[
+                    hypothesis for hypothesis in state.hypotheses if hypothesis.status == HypothesisStatus.REJECTED
+                ],
                 external_findings=state.external_findings,
                 caveats=[],
                 summary=(
-                    "The evidence does not show an overall decline for the period you asked about, so there "
-                    "is no decline to explain. " + strongest_evidence.description
+                    f"The measured change ({smallest_change:+.2f}%) is within the "
+                    f"{settings.negligiblity_threshold_percent:.1f}% negligibility threshold, so it is too "
+                    "small to treat as a meaningful overall change."
                 ),
             )
             analysis = analysis.model_copy(update={"follow_up_question": await self._contextual_follow_up_question(state)})

@@ -39,6 +39,10 @@ class QuestionUnderstanding(BaseModel):
     # separate vocabulary term from discovered data.
     clarification_kind: Literal["measure", "scope", "period", "definition", "other"] = "other"
     request_type: Literal["investigation", "direct_answer"] = "investigation"
+    # The factual starting point a causal question assumes.  This is extracted
+    # semantically by the model, not by matching words such as "rise" or
+    # "fall", and must be checked before causes are investigated.
+    premise_to_validate: str | None = Field(default=None, max_length=500)
 
 
 class HypothesisPlan(BaseModel):
@@ -133,6 +137,9 @@ class EvidenceAssessment(BaseModel):
     hypotheses: list[Hypothesis]
     confidence: float = Field(ge=0, le=1)
     ambiguity: str | None = None
+    # Only applicable to the unowned baseline check.  A causal investigation
+    # may proceed only when its factual starting point is confirmed.
+    premise_verdict: Literal["not_applicable", "confirmed", "rejected", "inconclusive"] = "not_applicable"
 
 
 class InvestigationDecision(BaseModel):

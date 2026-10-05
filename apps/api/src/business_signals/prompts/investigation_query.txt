@@ -18,4 +18,5 @@ field as `relationship_key` (for example `SELECT DISTINCT se.product_id AS relat
 `"public.products.id"`. Never use UNION or combine different relationship keys in one lookup. Do not refer to lookup aliases, CTEs, placeholder tables, relationship IDs, or
 source-database tables in the primary SQL: the executor binds returned key values as target-source filters before it validates and runs the final query. Do not attempt a
 cross-database SQL join and do not run an unfiltered proxy query. Use case-insensitive matching for textual values when a supplied value may differ only by casing. The purpose
-is shown in the UI: describe what the check will answer in everyday business language, without SQL, table names, fields, or internal identifiers.
+is shown in the UI: describe what the check will answer in everyday business language, without SQL, table names, fields, internal identifiers, or a clarification question.
+Only Question Understanding may ask the user for clarification.

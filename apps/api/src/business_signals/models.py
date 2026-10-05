@@ -369,6 +369,11 @@ class InvestigationState(BaseModel):
     limits: InvestigationLimits = Field(default_factory=InvestigationLimits)
     metric_definition: MetricDefinition | None = None
     analysis_scope: InvestigationScope | None = None
+    # A causal question may assert a factual starting point (for example a
+    # business result or change).  It is model-extracted in business language,
+    # then independently checked before any causal hypothesis is executed.
+    premise_to_validate: str | None = None
+    premise_status: Literal["not_needed", "pending", "confirmed", "rejected", "inconclusive"] = "not_needed"
     scope_coverage: list[ScopeCoverage] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
@@ -389,7 +394,9 @@ class InvestigationState(BaseModel):
     pending_step: InvestigationStep | None = None
     request_type: Literal["investigation", "direct_answer"] = "investigation"
     pending_human_question: str | None = None
-    human_resume_node: Literal["generate_hypotheses", "answer_directly", "select_investigation"] | None = None
+    human_resume_node: Literal[
+        "generate_hypotheses", "validate_premise", "answer_directly", "select_investigation"
+    ] | None = None
     human_feedback: list[HumanFeedback] = Field(default_factory=list)
     # Time spent waiting for the user is not investigation runtime and must not consume its budget.
     paused_at: datetime | None = None
