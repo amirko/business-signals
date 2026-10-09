@@ -114,6 +114,17 @@ class ComputedValue(BaseModel):
         return self
 
 
+class RelevanceSelection(BaseModel):
+    """How a generic document-search agent exposes all returned candidates."""
+
+    title_path: JsonPath
+    url_path: JsonPath
+    summary_path: JsonPath | None = None
+    section_path: JsonPath | None = None
+    published_at_path: JsonPath | None = None
+    max_candidates: int = Field(default=20, ge=1, le=50)
+
+
 class JsonResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -126,6 +137,7 @@ class JsonResponse(BaseModel):
     source_url_template: TemplateValue | None = None
     confidence: float = Field(default=0.65, ge=0, le=1)
     relationship: Literal["supporting", "correlated", "contradicting"] = "correlated"
+    relevance_selection: RelevanceSelection | None = None
 
 
 class HttpJsonRunner(BaseModel):

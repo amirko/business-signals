@@ -245,6 +245,20 @@ class ExternalFinding(BaseModel):
     measurements: list["ExternalMeasurement"] = Field(default_factory=list)
     coverage_method: str | None = None
     point_count: int | None = Field(default=None, ge=1)
+    # Candidate documents are retained only for research agents configured to
+    # use relevance selection. They show what the provider returned without
+    # treating its first hit as evidence.
+    candidates: list["ExternalResearchCandidate"] = Field(default_factory=list, max_length=50)
+
+
+class ExternalResearchCandidate(BaseModel):
+    """A provider-returned document considered for one external finding."""
+
+    title: str = Field(min_length=1, max_length=500)
+    url: str = Field(min_length=1, max_length=2_000)
+    summary: str | None = Field(default=None, max_length=4_000)
+    section: str | None = Field(default=None, max_length=200)
+    published_at: str | None = Field(default=None, max_length=100)
 
 
 class ExternalResearchCheck(BaseModel):
@@ -357,6 +371,25 @@ class QueryResultCacheEntry(BaseModel):
     resolved_entities: list[ResolvedEntityReference] = Field(default_factory=list)
 
 
+class CrossDatasourceLookupCacheEntry(BaseModel):
+    """Persisted values from one approved related-source lookup.
+
+    The entry belongs to one investigation state.  Its key includes the
+    approved relationship, the lookup SQL, and the source schema fingerprint,
+    so a value set is never reused after the related schema changes or in a
+    different conversation.
+    """
+
+    key: str
+    relation_id: str
+    relation_signature: str
+    datasource_id: str
+    schema_fingerprint: str | None = None
+    lookup_sql: str
+    values: list[str] = Field(default_factory=list)
+    source_row_count: int = Field(default=0, ge=0)
+
+
 class InvestigationState(BaseModel):
     investigation_id: str
     # The graph checkpoint to resume. Follow-up turns use a distinct thread so they do not
@@ -408,6 +441,9 @@ class InvestigationState(BaseModel):
     # This is per investigation, survives resume, and is never shared with a
     # different user's question or source schema.
     query_result_cache: list[QueryResultCacheEntry] = Field(default_factory=list)
+    # Related-source keys are likewise private to this investigation. They are
+    # retained so multiple hypotheses can reuse the same approved lookup.
+    cross_datasource_lookup_cache: list[CrossDatasourceLookupCacheEntry] = Field(default_factory=list)
     iteration: int = 0
     query_count: int = 0
     external_call_count: int = 0

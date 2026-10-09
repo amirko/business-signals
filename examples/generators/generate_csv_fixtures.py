@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 RNG = random.Random(20240719)
+EVENT_RNG = random.Random(20260416)
 START = date(2024, 1, 1)
 END = date(2024, 12, 31)
 
@@ -57,7 +58,18 @@ STORES = [
     ("FR-WEB-01", "France Online", "Online", "National", "France", "online"),
     ("DE-WEB-01", "Germany Online", "Online", "National", "Germany", "online"),
 ]
+DUBAI_STORES = [
+    ("AE-DXB-01", "Dubai Marina", "Dubai", "Dubai", "United Arab Emirates", "store"),
+    ("AE-DXB-02", "Dubai Mall", "Dubai", "Dubai", "United Arab Emirates", "store"),
+    ("AE-DXB-03", "Deira City Centre", "Dubai", "Dubai", "United Arab Emirates", "store"),
+    ("AE-WEB-01", "United Arab Emirates Online", "Online", "National", "United Arab Emirates", "online"),
+]
 NORTH_ITALY = {"IT-MIL-01", "IT-BER-01", "IT-BRE-01", "IT-TUR-01", "IT-GEN-01", "IT-VER-01"}
+DUBAI_PHYSICAL_STORES = {"AE-DXB-01", "AE-DXB-02", "AE-DXB-03"}
+DUBAI_ONLINE_STORE = "AE-WEB-01"
+DUBAI_FLOOD_DAYS = {date(2024, 4, day) for day in range(16, 20)}
+CONFLICT_BASELINE_START = date(2026, 2, 1)
+CONFLICT_END = date(2026, 3, 31)
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
@@ -77,6 +89,10 @@ def days() -> list[date]:
     return values
 
 
+def date_range(start: date, end: date) -> list[date]:
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+
+
 def build_catalog() -> tuple[list[dict[str, object]], dict[str, float], set[str]]:
     write_csv(DATA / "catalog/categories.csv", ["id", "name"], [dict(zip(["id", "name"], item)) for item in CATEGORIES])
     write_csv(
@@ -87,7 +103,7 @@ def build_catalog() -> tuple[list[dict[str, object]], dict[str, float], set[str]
     write_csv(
         DATA / "catalog/stores.csv",
         ["id", "name", "city", "region", "country", "channel"],
-        [dict(zip(["id", "name", "city", "region", "country", "channel"], item)) for item in STORES],
+        [dict(zip(["id", "name", "city", "region", "country", "channel"], item)) for item in [*STORES, *DUBAI_STORES]],
     )
 
     descriptors = {
@@ -150,6 +166,95 @@ def timestamp(day: date, hour: int, minute: int) -> str:
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def append_dubai_conflict_sales(
+    sales_rows: list[dict[str, object]], products: list[dict[str, object]], prices: dict[str, float]
+) -> None:
+    """Add a direct geopolitical-disruption benchmark with a February baseline.
+
+    March 2026 physical retail is constrained by local security measures and
+    reduced access. Online trade and inventory remain available, so the data
+    can distinguish an operations/traffic effect from a stockout or pricing
+    story without encoding the external event in application logic.
+    """
+    product_ids = [str(product["id"]) for product in products]
+    stores = DUBAI_STORES
+    sequence = 1
+    for day in date_range(CONFLICT_BASELINE_START, CONFLICT_END):
+        for store_id, _name, _city, _region, _country, channel in stores:
+            if channel == "online":
+                event_count = 20 + EVENT_RNG.randint(-3, 3)
+            elif day.month == 2:
+                event_count = 14 + EVENT_RNG.randint(-3, 3)
+            elif day.day <= 14:
+                event_count = 4 + EVENT_RNG.randint(0, 2)
+            else:
+                event_count = 8 + EVENT_RNG.randint(-2, 2)
+            for _ in range(max(1, event_count)):
+                product_id = EVENT_RNG.choice(product_ids)
+                units = EVENT_RNG.choices([1, 2, 3, 4], weights=[55, 29, 11, 5])[0]
+                sales_rows.append(
+                    {
+                        "occurred_at": timestamp(day, EVENT_RNG.randint(8, 20), EVENT_RNG.randint(0, 59)),
+                        "event_id": f"EV-DXB-{day:%Y%m%d}-{store_id[-2:]}-{sequence:05d}",
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "units": units,
+                        "revenue": f"{prices[product_id] * units:.2f}",
+                        "channel": channel,
+                        "platform": "web" if channel == "online" else "",
+                        "payment_method": EVENT_RNG.choices(["card", "wallet", "bank_transfer"], weights=[70, 24, 6])[0],
+                        "payment_status": "completed",
+                        "app_release": "5.0",
+                    }
+                )
+                sequence += 1
+
+
+def append_dubai_weather_sales(
+    sales_rows: list[dict[str, object]], products: list[dict[str, object]], prices: dict[str, float]
+) -> None:
+    """Add an April 2024 Dubai baseline and short physical-access disruption."""
+    product_ids = [str(product["id"]) for product in products]
+    sequence = 1
+    for day in date_range(date(2024, 4, 1), date(2024, 4, 30)):
+        for store_id, _name, _city, _region, _country, channel in DUBAI_STORES:
+            event_count = 20 + EVENT_RNG.randint(-3, 3) if channel == "online" else 14 + EVENT_RNG.randint(-3, 3)
+            if store_id in DUBAI_PHYSICAL_STORES and day in DUBAI_FLOOD_DAYS:
+                event_count = EVENT_RNG.randint(0, 5)
+            for _ in range(max(0, event_count)):
+                product_id = EVENT_RNG.choice(product_ids)
+                units = EVENT_RNG.choices([1, 2, 3, 4], weights=[55, 29, 11, 5])[0]
+                sales_rows.append(
+                    {
+                        "occurred_at": timestamp(day, EVENT_RNG.randint(8, 20), EVENT_RNG.randint(0, 59)),
+                        "event_id": f"EV-DXB-WX-{day:%Y%m%d}-{store_id[-2:]}-{sequence:05d}",
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "units": units,
+                        "revenue": f"{prices[product_id] * units:.2f}",
+                        "channel": channel,
+                        "platform": "web" if channel == "online" else "",
+                        "payment_method": EVENT_RNG.choices(["card", "wallet", "bank_transfer"], weights=[70, 24, 6])[0],
+                        "payment_status": "completed",
+                        "app_release": "4.17",
+                    }
+                )
+                sequence += 1
+
+
+def dubai_operation(day: date) -> tuple[str, int, str]:
+    """Return a generic operational state for the two real-world disruption windows."""
+    if day in DUBAI_FLOOD_DAYS:
+        if day == date(2024, 4, 16):
+            return "closed", 0, "severe weather"
+        return "restricted", 5, "severe weather"
+    if day.year == 2026 and day.month == 3:
+        if day.day <= 7:
+            return "restricted", 4, "security restriction"
+        return "restricted", 8, "security restriction"
+    return "open", 11, ""
+
+
 def build_analytics(products: list[dict[str, object]], prices: dict[str, float], shortage_products: set[str]) -> None:
     all_days = days()
     physical_stores = [store[0] for store in STORES if store[-1] == "store"]
@@ -188,6 +293,8 @@ def build_analytics(products: list[dict[str, object]], prices: dict[str, float],
     # A contained duplicate-ingestion event for later data-quality investigation.
     april_events = [row for row in sales_rows if row["occurred_at"].startswith("2024-04-04")][:120]
     sales_rows.extend(dict(row) for row in april_events)
+    append_dubai_weather_sales(sales_rows, products, prices)
+    append_dubai_conflict_sales(sales_rows, products, prices)
     write_csv(
         DATA / "analytics/sales_events.csv",
         ["occurred_at", "event_id", "product_id", "store_id", "units", "revenue", "channel", "platform", "payment_method", "payment_status", "app_release"],
@@ -219,6 +326,34 @@ def build_analytics(products: list[dict[str, object]], prices: dict[str, float],
                         "incoming_units": incoming,
                     }
                 )
+    for day in date_range(CONFLICT_BASELINE_START, CONFLICT_END):
+        if day.weekday() != 0:
+            continue
+        for store_id in DUBAI_PHYSICAL_STORES:
+            for product_id in tracked_products:
+                product_number = int(product_id[1:])
+                inventory_rows.append(
+                    {
+                        "recorded_at": timestamp(day, 0, 0),
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "available_units": 115 + (product_number * 11 + day.day * 3) % 90,
+                        "incoming_units": 25 + (product_number * 5 + day.month) % 55,
+                    }
+                )
+    for day in [item for item in week_starts if item.month == 4]:
+        for store_id in DUBAI_PHYSICAL_STORES:
+            for product_id in tracked_products:
+                product_number = int(product_id[1:])
+                inventory_rows.append(
+                    {
+                        "recorded_at": timestamp(day, 0, 0),
+                        "product_id": product_id,
+                        "store_id": store_id,
+                        "available_units": 120 + (product_number * 13 + day.day * 5) % 85,
+                        "incoming_units": 24 + (product_number * 3 + day.month) % 50,
+                    }
+                )
     write_csv(DATA / "analytics/inventory_history.csv", ["recorded_at", "product_id", "store_id", "available_units", "incoming_units"], inventory_rows)
 
     traffic_rows = []
@@ -227,6 +362,27 @@ def build_analytics(products: list[dict[str, object]], prices: dict[str, float],
         for store in STORES:
             baseline = 720 if store[-1] == "store" else 1050
             traffic_rows.append({"recorded_at": timestamp(day, 0, 0), "store_id": store[0], "visits": baseline + weekend_lift + RNG.randint(-85, 85)})
+    for day in date_range(date(2024, 4, 1), date(2024, 4, 30)):
+        for store_id, _name, _city, _region, _country, channel in DUBAI_STORES:
+            baseline = 1050 if channel == "online" else 720
+            if store_id in DUBAI_PHYSICAL_STORES and day in DUBAI_FLOOD_DAYS:
+                baseline = 130 if day == date(2024, 4, 16) else 260
+            traffic_rows.append(
+                {"recorded_at": timestamp(day, 0, 0), "store_id": store_id, "visits": baseline + EVENT_RNG.randint(-45, 45)}
+            )
+    for day in date_range(CONFLICT_BASELINE_START, CONFLICT_END):
+        for store in DUBAI_STORES:
+            if store[-1] == "online":
+                baseline = 1050
+            elif day.month == 2:
+                baseline = 720
+            elif day.day <= 14:
+                baseline = 155
+            else:
+                baseline = 360
+            traffic_rows.append(
+                {"recorded_at": timestamp(day, 0, 0), "store_id": store[0], "visits": baseline + EVENT_RNG.randint(-45, 45)}
+            )
     write_csv(DATA / "analytics/store_traffic.csv", ["recorded_at", "store_id", "visits"], traffic_rows)
 
     conversion_rows = []
@@ -270,7 +426,40 @@ def build_analytics(products: list[dict[str, object]], prices: dict[str, float],
                     "currency": "USD" if str(product["supplier_id"]) == "S09" else "JPY" if str(product["supplier_id"]) == "S10" else "EUR",
                 }
             )
+    for day in (date(2026, 2, 1), date(2026, 3, 1)):
+        for product in products:
+            product_id = str(product["id"])
+            base_cost = float(product["supplier_unit_cost"])
+            price_rows.append(
+                {
+                    "recorded_at": timestamp(day, 0, 0),
+                    "product_id": product_id,
+                    "selling_price": f"{prices[product_id]:.2f}",
+                    "local_unit_cost": f"{base_cost:.2f}",
+                    "supplier_base_price": f"{base_cost:.2f}",
+                    "currency": "USD" if str(product["supplier_id"]) == "S09" else "JPY" if str(product["supplier_id"]) == "S10" else "EUR",
+                }
+            )
     write_csv(DATA / "analytics/price_history.csv", ["recorded_at", "product_id", "selling_price", "local_unit_cost", "supplier_base_price", "currency"], price_rows)
+
+    operation_rows: list[dict[str, object]] = []
+    for day in [*all_days, *date_range(CONFLICT_BASELINE_START, CONFLICT_END)]:
+        for store_id in DUBAI_PHYSICAL_STORES:
+            status, hours, reason = dubai_operation(day)
+            operation_rows.append(
+                {
+                    "recorded_at": timestamp(day, 0, 0),
+                    "store_id": store_id,
+                    "operating_status": status,
+                    "open_hours": hours,
+                    "restriction_reason": reason,
+                }
+            )
+    write_csv(
+        DATA / "analytics/store_operations.csv",
+        ["recorded_at", "store_id", "operating_status", "open_hours", "restriction_reason"],
+        operation_rows,
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+Choose whether one provider-returned document is relevant enough to use as contextual evidence for the assigned hypothesis.
+
+You may select only a `candidate_index` from `provider_candidates`, or return `relevance="none"` and `candidate_index=null`.
+Select a document only if its title or excerpt directly bears on the causal mechanism, the requested place, and the requested time window.
+Do not select ordinary background news, celebrity or sport stories, loosely related mentions of the place, or articles that merely share a word.
+Do not infer facts absent from the candidate title or excerpt. A relevant document is contextual evidence, not proof of causation.

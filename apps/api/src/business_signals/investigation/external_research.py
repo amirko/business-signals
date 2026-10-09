@@ -10,7 +10,7 @@ from typing import Any
 
 from business_signals.config import settings
 from business_signals.external import ExternalResearcher
-from business_signals.llm import LLM, ExternalResearchPlans
+from business_signals.llm import LLM, ExternalResearchPlans, ExternalResearchRelevance
 from business_signals.models import (
     ExternalFinding,
     ExternalResearchCheck,
@@ -168,6 +168,56 @@ class ExternalResearchCoordinator:
         if isinstance(status_code, int):
             return f"{agent_id}: HTTP {status_code} ({type(error).__name__})"
         return f"{agent_id}: {type(error).__name__}"
+
+    async def _select_relevant_finding(
+        self,
+        state: InvestigationState,
+        request: dict[str, str],
+        finding: ExternalFinding,
+    ) -> ExternalFinding | None:
+        """Use only a provider document that actually bears on the assigned claim."""
+        if not finding.candidates:
+            return finding
+        hypothesis = next((item for item in state.hypotheses if item.id == request["hypothesis_id"]), None)
+        if hypothesis is None:
+            raise RuntimeError("External research request has no matching hypothesis")
+        result = await self.llm.structured(
+            ExternalResearchRelevance,
+            prompts.load("external_research_relevance"),
+            {
+                "question": state.current_conversation_question or state.question,
+                "hypothesis": hypothesis.model_dump(mode="json"),
+                "request": request,
+                "provider_candidates": [candidate.model_dump(mode="json") for candidate in finding.candidates],
+            },
+        )
+        if result.relevance == "none":
+            logger.info(
+                "External research returned no relevant candidate: investigation=%s agent=%s candidates=%d rationale=%s",
+                state.investigation_id,
+                request["agent_id"],
+                len(finding.candidates),
+                result.rationale,
+            )
+            return None
+        if result.candidate_index is None or result.candidate_index >= len(finding.candidates):
+            raise ValueError("External relevance selection did not identify a returned candidate")
+        candidate = finding.candidates[result.candidate_index]
+        observation = candidate.title
+        if candidate.summary:
+            observation = f"{observation} — {candidate.summary}"
+        return finding.model_copy(
+            update={
+                "observation": observation,
+                "confidence": min(finding.confidence, result.confidence),
+                "source_url": candidate.url,
+                "source_title": (
+                    f"{finding.source_title}: {candidate.section}"
+                    if candidate.section and candidate.section != finding.source_title.removeprefix("The Guardian: ")
+                    else finding.source_title
+                ),
+            }
+        )
 
     @staticmethod
     def _normalize_comparison_windows(result: ExternalResearchPlans) -> ExternalResearchPlans:
@@ -404,7 +454,9 @@ class ExternalResearchCoordinator:
         requests = raw_requests if isinstance(raw_requests, list) else [raw_requests]
         agents = {agent["id"]: agent for agent in self.available_agents()}
 
-        async def run(request: dict[str, str]) -> tuple[ExternalFinding, Observation, InvestigationStep]:
+        async def run(
+            request: dict[str, str],
+        ) -> tuple[ExternalFinding | None, Observation | None, InvestigationStep]:
             agent_id = request["agent_id"]
             hypothesis_id = request["hypothesis_id"]
             agent = agents.get(agent_id)
@@ -441,6 +493,23 @@ class ExternalResearchCoordinator:
                 )
             else:
                 finding = await self.researcher.research(*research_args)
+            finding = await self._select_relevant_finding(state, request, finding)
+            step = InvestigationStep(
+                iteration=state.iteration + 1,
+                hypothesis_id=hypothesis_id,
+                action=f"Check {agent['name'].casefold()}.",
+                rationale=request["rationale"],
+                expected_information_gain=0.5,
+            )
+            if finding is None:
+                await self._emit(
+                    state,
+                    "ExternalResearchNoRelevantResult",
+                    "The external search returned no result relevant enough to use as evidence.",
+                    agent_id=agent_id,
+                    hypothesis_id=hypothesis_id,
+                )
+                return None, None, step
             logger.info(
                 "External research completed: investigation=%s agent=%s finding=%s",
                 state.investigation_id,
@@ -467,13 +536,7 @@ class ExternalResearchCoordinator:
                     },
                     source=f"external:{finding.type}",
                 ),
-                InvestigationStep(
-                    iteration=state.iteration + 1,
-                    hypothesis_id=hypothesis_id,
-                    action=f"Check {agent['name'].casefold()}.",
-                    rationale=request["rationale"],
-                    expected_information_gain=0.5,
-                ),
+                step,
             )
 
         results = await asyncio.gather(*(run(request) for request in requests), return_exceptions=True)
@@ -518,7 +581,9 @@ class ExternalResearchCoordinator:
                 "failed_external_checks": failed_external_checks,
                 "next_action": "continue",
             }
-        findings, observations, steps = zip(*successful, strict=True)
+        findings = [finding for finding, _observation, _step in successful if finding is not None]
+        observations = [observation for _finding, observation, _step in successful if observation is not None]
+        steps = [step for _finding, _observation, step in successful]
         return {
             "external_request": None,
             "external_call_count": state.external_call_count + len(requests),
@@ -527,7 +592,7 @@ class ExternalResearchCoordinator:
             "observations": [*state.observations, *observations],
             "investigation_history": [*state.investigation_history, *steps],
             "pending_step": None,
-            "current_focus": successful[-1][2].hypothesis_id,
+            "current_focus": steps[-1].hypothesis_id,
             "failed_external_hypothesis_ids": failed_hypothesis_ids,
             "failed_external_checks": failed_external_checks,
             "next_action": None,

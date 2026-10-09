@@ -1,0 +1,7 @@
+id: dubai-geopolitical-disruption
+question: Why did physical-store revenue in Dubai fall in March 2026 compared with February?
+root_cause: {category: local_geopolitical_disruption}
+expected_findings: [physical_store_decline, traffic_decline, operations_restriction, inventory_stable, online_stable]
+expected_external_agents: [guardian-news]
+expected_external_event: [Dubai regional conflict, March 2026]
+forbidden_conclusions: [inventory_stockout, pricing_change]

@@ -48,6 +48,7 @@ from business_signals.llm import (
 )
 from business_signals.models import (
     ConversationTurn,
+    CrossDatasourceLookupCacheEntry,
     DatasourceSummary,
     DatasourceType,
     Evidence,
@@ -119,6 +120,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 DatasourceType,
                 DatasourceSummary,
                 ConversationTurn,
+                CrossDatasourceLookupCacheEntry,
                 Evidence,
                 EvidenceDataPoint,
                 EvidenceRequirement,
@@ -128,6 +130,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 Hypothesis,
                 HypothesisStatus,
                 InvestigationLimits,
+                InvestigationScope,
                 InvestigationState,
                 InvestigationStatus,
                 InvestigationStep,
@@ -735,16 +738,25 @@ class InvestigationEngine(DirectAnswerMixin):
         # A measure ambiguity (for example, the business meaning of a
         # requested total) cannot be resolved from a catalog value. Preserve
         # it for the user and resolve scope vocabulary only after the measure
-        # is known. Low metric confidence provides compatibility for providers
-        # or old checkpoints that omit the new clarification kind.
+        # is known. Some providers omit the question text even while reporting
+        # low confidence, so turn that signal into one generic, user-facing
+        # clarification before validating an investigation premise.
+        metric_requires_clarification = bool(
+            request_type == "investigation"
+            and result.metric_definition is not None
+            and result.metric_definition.confidence < settings.metric_definition_confidence
+            and not state.human_feedback
+        )
+        if metric_requires_clarification and not ambiguity:
+            ambiguity = (
+                f"How should I define \u201c{result.metric_definition.name}\u201d for this analysis? "
+                "Please say what it should include or exclude."
+            )
         measure_is_ambiguous = bool(
             ambiguity
             and (
                 result.clarification_kind == "measure"
-                or (
-                    result.metric_definition is not None
-                    and result.metric_definition.confidence < settings.metric_definition_confidence
-                )
+                or metric_requires_clarification
             )
         )
         inferred_filter = None if measure_is_ambiguous else await self._infer_ambiguity_from_discovered_values(metadata, ambiguity)
@@ -1237,6 +1249,14 @@ class InvestigationEngine(DirectAnswerMixin):
             if not isinstance(projection, exp.Column) or projection.name != CROSS_DATASOURCE_LOOKUP_KEY:
                 return False
             tables = list(select.find_all(exp.Table))
+            # The reserved lookup key has no meaning in primary-datasource
+            # SQL. Models may emit either ``FROM placeholder`` or the bare
+            # ``SELECT relationship_key`` form. Both are planner-only syntax
+            # and are safely replaced before the approved lookup binds the
+            # real values. A query that names a real source remains protected.
+            if not tables:
+                removed += 1
+                return True
             if len(tables) != 1:
                 return False
             table = tables[0]
@@ -1304,6 +1324,7 @@ class InvestigationEngine(DirectAnswerMixin):
         lookup_steps: list[InvestigationStep] = []
         lookup_coverage: list[ScopeCoverage] = []
         lookup_query_count = 0
+        new_lookup_cache_entries: list[CrossDatasourceLookupCacheEntry] = []
         cached_result: QueryResultCacheEntry | None = None
         for attempt in range(2):
             try:
@@ -1317,8 +1338,21 @@ class InvestigationEngine(DirectAnswerMixin):
                 sql = validate_query_columns(sql, self._columns_by_table(selected_datasource))
                 if must_measure_metric and metric_table and not query_references_table(sql, metric_table[1]):
                     raise UnsafeQueryError(f"Query must measure the reported metric from {metric_table[1]}")
-                sql, lookup_steps, lookup_query_count, lookup_coverage = await self._apply_cross_datasource_lookups(
-                    state,
+                (
+                    sql,
+                    lookup_steps,
+                    lookup_query_count,
+                    lookup_coverage,
+                    new_lookup_cache_entries,
+                ) = await self._apply_cross_datasource_lookups(
+                    state.model_copy(
+                        update={
+                            "cross_datasource_lookup_cache": [
+                                *state.cross_datasource_lookup_cache,
+                                *new_lookup_cache_entries,
+                            ]
+                        }
+                    ),
                     datasource_id,
                     sql,
                     result.cross_datasource_lookups,
@@ -1465,6 +1499,10 @@ class InvestigationEngine(DirectAnswerMixin):
                     ),
                 ]
             ),
+            "cross_datasource_lookup_cache": [
+                *state.cross_datasource_lookup_cache,
+                *new_lookup_cache_entries,
+            ],
         }
 
     async def _record_step_failure(self, state: InvestigationState, exc: Exception) -> dict[str, Any]:
@@ -1672,10 +1710,16 @@ class InvestigationEngine(DirectAnswerMixin):
         primary_sql: str,
         lookups: list[CrossDatasourceLookup],
         metadata: list[dict[str, Any]],
-    ) -> tuple[str, list[InvestigationStep], int, list[ScopeCoverage]]:
+    ) -> tuple[
+        str,
+        list[InvestigationStep],
+        int,
+        list[ScopeCoverage],
+        list[CrossDatasourceLookupCacheEntry],
+    ]:
         """Apply approved related-source lookups without ever joining database connections."""
         if not lookups:
-            return primary_sql, [], 0, []
+            return primary_sql, [], 0, [], []
 
         relations = {
             relation.id: relation
@@ -1685,6 +1729,7 @@ class InvestigationEngine(DirectAnswerMixin):
         filtered_sql = primary_sql
         steps: list[InvestigationStep] = []
         coverage: list[ScopeCoverage] = []
+        cache_entries: list[CrossDatasourceLookupCacheEntry] = []
         used_relations: set[str] = set()
 
         for lookup in lookups:
@@ -1710,38 +1755,77 @@ class InvestigationEngine(DirectAnswerMixin):
                 validate_read_query(self._case_insensitive_text_filters(lookup.sql)),
                 {table["name"] for table in lookup_source["tables"]},
             )
-            await self._emit(
-                state,
-                "QueryStarted",
-                lookup.purpose,
-                datasource_id=lookup.datasource_id,
-                hypothesis_id=state.pending_step.hypothesis_id if state.pending_step else None,
+            relation_signature = self._relationship_signature(relation)
+            cache_key = self._cross_datasource_lookup_cache_key(
+                relation.id,
+                relation_signature,
+                lookup.datasource_id,
+                lookup_source.get("fingerprint"),
+                lookup_sql,
             )
-            lookup_rows = await self.registry.get(lookup.datasource_id).execute_read_query(lookup_sql)
-            await self._emit(
-                state,
-                "QueryCompleted",
-                "The related records are ready.",
-                datasource_id=lookup.datasource_id,
-                hypothesis_id=state.pending_step.hypothesis_id if state.pending_step else None,
-                row_count=len(lookup_rows),
-            )
-            if any(CROSS_DATASOURCE_LOOKUP_KEY not in row for row in lookup_rows):
-                raise UnsafeQueryError(
-                    "Cross-datasource lookup must return the approved relationship key"
+            cached = self._cached_cross_datasource_lookup(state, cache_key)
+            if cached is not None:
+                values = cached.values
+                source_row_count = cached.source_row_count
+                logger.info(
+                    "Reusing approved cross-datasource lookup: investigation=%s relation=%s cache_key=%s",
+                    state.investigation_id,
+                    relation.id,
+                    cache_key[:12],
                 )
-            values = list(
-                dict.fromkeys(
-                    str(row[CROSS_DATASOURCE_LOOKUP_KEY])
-                    for row in lookup_rows
-                    if row.get(CROSS_DATASOURCE_LOOKUP_KEY) is not None
+                await self._emit(
+                    state,
+                    "QueryReused",
+                    "An identical related-data check was reused.",
+                    datasource_id=lookup.datasource_id,
+                    hypothesis_id=state.pending_step.hypothesis_id if state.pending_step else None,
                 )
-            )[:500]
+            else:
+                await self._emit(
+                    state,
+                    "QueryStarted",
+                    lookup.purpose,
+                    datasource_id=lookup.datasource_id,
+                    hypothesis_id=state.pending_step.hypothesis_id if state.pending_step else None,
+                )
+                lookup_rows = await self.registry.get(lookup.datasource_id).execute_read_query(lookup_sql)
+                await self._emit(
+                    state,
+                    "QueryCompleted",
+                    "The related records are ready.",
+                    datasource_id=lookup.datasource_id,
+                    hypothesis_id=state.pending_step.hypothesis_id if state.pending_step else None,
+                    row_count=len(lookup_rows),
+                )
+                if any(CROSS_DATASOURCE_LOOKUP_KEY not in row for row in lookup_rows):
+                    raise UnsafeQueryError(
+                        "Cross-datasource lookup must return the approved relationship key"
+                    )
+                values = list(
+                    dict.fromkeys(
+                        str(row[CROSS_DATASOURCE_LOOKUP_KEY])
+                        for row in lookup_rows
+                        if row.get(CROSS_DATASOURCE_LOOKUP_KEY) is not None
+                    )
+                )[:500]
+                source_row_count = len(lookup_rows)
+                cache_entries.append(
+                    CrossDatasourceLookupCacheEntry(
+                        key=cache_key,
+                        relation_id=relation.id,
+                        relation_signature=relation_signature,
+                        datasource_id=lookup.datasource_id,
+                        schema_fingerprint=lookup_source.get("fingerprint"),
+                        lookup_sql=lookup_sql,
+                        values=values,
+                        source_row_count=source_row_count,
+                    )
+                )
             coverage.append(
                 ScopeCoverage(
                     description=lookup.purpose,
                     matched_records=len(values),
-                    limited=len(lookup_rows) > len(values) or len(lookup_rows) >= 500,
+                    limited=source_row_count > len(values) or source_row_count >= 500,
                 )
             )
             if not query_references_table(filtered_sql, primary_field.rsplit(".", 1)[0]):
@@ -1768,7 +1852,46 @@ class InvestigationEngine(DirectAnswerMixin):
                 primary_datasource_id,
                 len(values),
             )
-        return filtered_sql, steps, len(steps), coverage
+        return filtered_sql, steps, len(cache_entries), coverage, cache_entries
+
+    @staticmethod
+    def _relationship_signature(relation: Any) -> str:
+        """Fingerprint the approved edge as well as its stable relation ID."""
+        return "\n".join(
+            (
+                relation.source_datasource,
+                relation.source_field,
+                relation.target_datasource,
+                relation.target_field,
+                relation.cardinality,
+                str(relation.confirmed),
+            )
+        )
+
+    @staticmethod
+    def _cross_datasource_lookup_cache_key(
+        relation_id: str,
+        relation_signature: str,
+        datasource_id: str,
+        schema_fingerprint: str | None,
+        lookup_sql: str,
+    ) -> str:
+        payload = "\n".join(
+            (
+                relation_id,
+                relation_signature,
+                datasource_id,
+                schema_fingerprint or "",
+                " ".join(lookup_sql.split()),
+            )
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _cached_cross_datasource_lookup(
+        state: InvestigationState, key: str
+    ) -> CrossDatasourceLookupCacheEntry | None:
+        return next((entry for entry in state.cross_datasource_lookup_cache if entry.key == key), None)
 
     @staticmethod
     def _relationship_traversal(
@@ -1936,19 +2059,6 @@ class InvestigationEngine(DirectAnswerMixin):
                 settings.negligiblity_threshold_percent,
             )
             return {"next_action": "finish", "status": InvestigationStatus.RUNNING}
-        supported = [
-            h for h in state.hypotheses if h.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}
-        ]
-        has_high_confidence_root = any(hypothesis.confidence >= 0.78 for hypothesis in supported)
-        has_direct_evidence = any(
-            evidence.relationship == "direct"
-            and evidence.basis == "direct"
-            and any(hypothesis.id in evidence.hypothesis_ids for hypothesis in supported)
-            for evidence in state.evidence
-        )
-        if has_high_confidence_root and has_direct_evidence:
-            return {"next_action": "finish"}
-
         available_agents = self.external_research.available_agents()
         can_research_externally = bool(
             state.query_count
@@ -1970,6 +2080,19 @@ class InvestigationEngine(DirectAnswerMixin):
                 [hypothesis.name for hypothesis in untested_external_hypotheses],
             )
             return {"next_action": "external", "status": InvestigationStatus.RUNNING}
+
+        supported = [
+            h for h in state.hypotheses if h.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}
+        ]
+        has_high_confidence_root = any(hypothesis.confidence >= 0.78 for hypothesis in supported)
+        has_direct_evidence = any(
+            evidence.relationship == "direct"
+            and evidence.basis == "direct"
+            and any(hypothesis.id in evidence.hypothesis_ids for hypothesis in supported)
+            for evidence in state.evidence
+        )
+        if has_high_confidence_root and has_direct_evidence:
+            return {"next_action": "finish"}
 
         # Let a relevant configured external check complete the investigation
         # after its internal baseline, even when that baseline consumed the
@@ -2097,8 +2220,45 @@ class InvestigationEngine(DirectAnswerMixin):
             premise_evidence = [item for item in state.evidence if item.scope == "premise"]
             strongest_evidence = max(premise_evidence, key=lambda item: item.confidence, default=None)
             was_rejected = state.premise_status == "rejected"
+            check_unavailable = state.premise_status == "inconclusive" and bool(state.failed_checks)
             outcome = "was not supported" if was_rejected else "could not be confirmed"
             evidence_sentence = f" {strongest_evidence.description}" if strongest_evidence else ""
+            if check_unavailable:
+                analysis = FinalAnalysis(
+                    likely_root_cause="Starting-point data check unavailable",
+                    confidence=0.0,
+                    evidence=[],
+                    rejected_hypotheses=[],
+                    external_findings=[],
+                    caveats=[
+                        "The starting-point data check failed before it returned any result.",
+                        "This does not confirm or contradict the reported business change.",
+                    ],
+                    summary=(
+                        "The investigation could not check whether the reported business change occurred, "
+                        "so it did not begin looking for causes. Please try again."
+                    ),
+                )
+                analysis = analysis.model_copy(
+                    update={"follow_up_question": await self._contextual_follow_up_question(state)}
+                )
+                analysis = self._with_scope_caveats(state, analysis)
+                conversation_turns = completed_conversation_turns(analysis)
+                await self._emit(
+                    state,
+                    "InvestigationCompleted",
+                    analysis.summary,
+                    status=InvestigationStatus.COMPLETED,
+                    budget_exhausted=False,
+                    final_analysis=analysis.model_dump(mode="json"),
+                    conversation_turns=[turn.model_dump(mode="json") for turn in conversation_turns],
+                )
+                return {
+                    "final_analysis": analysis,
+                    "confidence": analysis.confidence,
+                    "conversation_turns": conversation_turns,
+                    "status": InvestigationStatus.COMPLETED,
+                }
             analysis = FinalAnalysis(
                 likely_root_cause=(
                     "Reported starting point was not found"

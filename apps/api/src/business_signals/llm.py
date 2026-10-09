@@ -126,10 +126,16 @@ class DirectAnswerQuery(BaseModel):
 class DirectAnswerCombination(BaseModel):
     """A small, deterministic cross-source operation over independently queried rows."""
 
-    operation: Literal["set_difference", "intersection", "union"]
+    operation: Literal["set_difference", "intersection", "union", "aggregate"]
     primary_key: str
     supporting_query_index: int = Field(ge=0, le=2)
     supporting_key: str
+    # Required only for ``aggregate``.  The main and supporting rows are
+    # joined through the approved relationship, then the backend—not the
+    # language model—groups the complete result set and calculates the value.
+    group_by: str | None = None
+    measure: str | None = None
+    aggregation: Literal["sum", "average", "minimum", "maximum"] | None = None
 
 
 class EvidenceAssessment(BaseModel):
@@ -163,6 +169,15 @@ class ExternalResearchPlans(BaseModel):
     """A bounded set of independent catalog-defined external checks."""
 
     plans: list[ExternalResearchPlan] = Field(min_length=1, max_length=3)
+
+
+class ExternalResearchRelevance(BaseModel):
+    """Grounded selection of a useful document from a provider result set."""
+
+    candidate_index: int | None = Field(default=None, ge=0, le=49)
+    relevance: Literal["relevant", "none"]
+    confidence: float = Field(ge=0, le=1)
+    rationale: str = Field(min_length=1, max_length=500)
 
 
 class ExternalAgentAssignment(BaseModel):

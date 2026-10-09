@@ -2,8 +2,14 @@ import asyncio
 
 import pytest
 from business_signals.investigation.external_research import ExternalResearchCoordinator
-from business_signals.llm import ExternalResearchPlan, ExternalResearchPlans
-from business_signals.models import ExternalFinding, HypothesisStatus, InvestigationState, InvestigationStep
+from business_signals.llm import ExternalResearchPlan, ExternalResearchPlans, ExternalResearchRelevance
+from business_signals.models import (
+    ExternalFinding,
+    ExternalResearchCandidate,
+    HypothesisStatus,
+    InvestigationState,
+    InvestigationStep,
+)
 
 
 class ExternalResearchFixture:
@@ -96,6 +102,93 @@ class UnavailableResearchFixture(ExternalResearchFixture):
         self, agent_id: str, subject: str, start_date: str, end_date: str, context: str
     ) -> ExternalFinding:
         raise RuntimeError("provider timeout")
+
+
+class NewsCandidatesFixture:
+    def available_agents(self) -> list[dict[str, object]]:
+        return [{"id": "guardian-news", "name": "Historic news", "evidence_topics": ["public.events"]}]
+
+    async def research(
+        self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str
+    ) -> ExternalFinding:
+        return ExternalFinding(
+            type="guardian-news",
+            period=f"{start_date} to {end_date}",
+            observation="Unrelated tennis article",
+            relationship="correlated",
+            confidence=0.68,
+            source_url="https://www.theguardian.com/sport/example",
+            source_title="The Guardian: Sport",
+            candidates=[
+                ExternalResearchCandidate(
+                    title="Unrelated tennis article",
+                    url="https://www.theguardian.com/sport/example",
+                    section="Sport",
+                ),
+                ExternalResearchCandidate(
+                    title="General Dubai business feature",
+                    url="https://www.theguardian.com/business/example",
+                    section="Business",
+                ),
+            ],
+        )
+
+
+class NoRelevantNewsLLM:
+    async def structured(self, response_model, _instruction: str, payload: dict[str, object]):
+        assert response_model is ExternalResearchRelevance
+        assert len(payload["provider_candidates"]) == 2
+        return ExternalResearchRelevance(
+            candidate_index=None,
+            relevance="none",
+            confidence=0.98,
+            rationale="Neither returned article documents a disruption or closure relevant to the claim.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_research_omits_provider_candidates_that_do_not_bear_on_the_hypothesis() -> None:
+    emitted: list[str] = []
+
+    async def emit(_state: InvestigationState, event_type: str, _message: str, **_data: object) -> None:
+        emitted.append(event_type)
+
+    coordinator = ExternalResearchCoordinator(
+        researcher=NewsCandidatesFixture(),  # type: ignore[arg-type]
+        llm=NoRelevantNewsLLM(),  # type: ignore[arg-type]
+        emit=emit,
+        state_payload=lambda _state: {},
+        resolve_hypothesis_name=lambda _name, _state: "hyp_events",
+    )
+    state = InvestigationState(
+        investigation_id="inv_irrelevant_news",
+        question="Why did store revenue fall?",
+        datasources=[],
+        hypotheses=[{
+            "id": "hyp_events",
+            "name": "Local closures",
+            "description": "A local closure reduced access to stores.",
+            "category": "external",
+            "research_scope": "external",
+            "evidence_topics": ["public.events"],
+            "confidence": 0.2,
+        }],
+        external_request={
+            "agent_id": "guardian-news",
+            "hypothesis_id": "hyp_events",
+            "subject": "Dubai, United Arab Emirates",
+            "start_date": "2026-02-01",
+            "end_date": "2026-03-31",
+            "rationale": "Check reports for closures or disruptions affecting shopper access.",
+        },
+    )
+
+    completed = await coordinator.execute(state)
+
+    assert completed["external_findings"] == []
+    assert completed["observations"] == []
+    assert completed["external_research_checks"][0].status == "completed"
+    assert emitted == ["ExternalResearchStarted", "ExternalResearchNoRelevantResult"]
 
 
 class ParallelResearchFixture:

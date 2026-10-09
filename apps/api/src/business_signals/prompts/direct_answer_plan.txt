@@ -1,7 +1,33 @@
-Answer this factual business request with focused read-only queries. Each query must select one exact datasource ID and use only that datasource's schema. Never join databases in SQL. If the answer needs data from separate datasources, put the main query in the top-level fields, put up to three additional independent queries in supporting_queries, and declare a combination only when their result sets need a deterministic union, intersection, or set difference. For a set difference, the main query is the set to keep and supporting_query_index identifies the set to remove. A combination key may contain one result field or a comma-separated, ordered list of result fields when a grouped result needs a composite key.
+Answer this factual business request with focused read-only queries. Each query must select one exact datasource ID and use only that
+datasource's schema. Never join databases in SQL. If the answer needs data from separate datasources, put the main query in the top-level
+fields, put up to three additional independent queries in supporting_queries, and declare a combination only when their result sets need a
+deterministic union, intersection, set difference, or aggregate. For a set difference, the main query is the set to keep and
+supporting_query_index identifies the set to remove. A combination key may contain one result field or a comma-separated, ordered list of
+result fields when a grouped result needs a composite key.
 
-For rankings, return the requested top results in a business-friendly order. If the result uses an internal identifier, include that identifier column unchanged; the service will resolve a customer-facing name from a selected lookup source and remove the identifier before presenting the result. When trusted_entity_references identify an entity from an earlier turn, reuse its identifier in the SQL filter instead of looking it up again. Those identifiers are backend-only and must never appear in the purpose or answer.
+Use operation `aggregate` when a requested breakdown needs a readable group from a related datasource. Return the complete numeric detail in
+the main query and the matching key plus group label in the supporting query. Set primary_key and supporting_key to the approved relationship
+fields, group_by to the returned readable group field, measure to the one returned numeric field, and aggregation to `sum`, `average`,
+`minimum`, or `maximum`. The backend will join and aggregate all returned rows before synthesis; never calculate or describe a partial page
+as a complete breakdown.
 
-Do not infer that revenue can be attributed to a customer platform, device, channel, or other dimension unless the revenue records themselves contain that dimension or an approved direct relationship links the records. Never join independent aggregates merely because they share a date. For an aggregate filtered by a category, return a matching-record count alongside the total so an empty result is clear. Preserve the source meaning of each measure: an event-row count is not necessarily an order count, and a conversion-metric count must not be replaced by a transaction-table count without an approved relationship proving they represent the same population. When a continuation selects an estimate based on an earlier metric, first retrieve that metric from its original source and clearly label any estimate rather than presenting it as a recorded order or revenue total.
+For rankings, return the requested top results in a business-friendly order. If the result uses an internal identifier, include that identifier
+column unchanged; the service will resolve a customer-facing name from a selected lookup source and remove the identifier before presenting
+the result. When trusted_entity_references identify an entity from an earlier turn, reuse its identifier in the SQL filter instead of looking
+it up again. Those identifiers are backend-only and must never appear in the purpose or answer.
 
-A dimension present directly on the queried records can be used for a breakdown without a separate mapping. Do not claim that a channel, store, or other directly available dimension needs a platform or order-level join merely because another requested dimension is unavailable. When the user asks for a breakdown by a related business entity, include its readable lookup as a supporting query using the approved relationship, so the final rows contain names rather than internal references. Use a relationship across datasources only when it is listed in trusted_cross_datasource_relationships; those approved links can guide the independent retrievals and deterministic combination. Do not invent a comparison, prior period, or causal explanation. The purpose is user-visible: explain the answer in plain language without table names or SQL. Earlier answered clarifications are authoritative: reuse them unless the user explicitly changes them.
+Do not infer that revenue can be attributed to a customer platform, device, channel, or other dimension unless the revenue records themselves
+contain that dimension or an approved direct relationship links the records. Never join independent aggregates merely because they share a
+date. For an aggregate filtered by a category, return a matching-record count alongside the total so an empty result is clear. Preserve the
+source meaning of each measure: an event-row count is not necessarily an order count, and a conversion-metric count must not be replaced by a
+transaction-table count without an approved relationship proving they represent the same population. When a continuation selects an estimate
+based on an earlier metric, first retrieve that metric from its original source and clearly label any estimate rather than presenting it as a
+recorded order or revenue total.
+
+A dimension present directly on the queried records can be used for a breakdown without a separate mapping. Do not claim that a channel, store,
+or other directly available dimension needs a platform or order-level join merely because another requested dimension is unavailable. When the
+user asks for a breakdown by a related business entity, include its readable lookup as a supporting query using the approved relationship, so
+the final rows contain names rather than internal references. Use a relationship across datasources only when it is listed in
+trusted_cross_datasource_relationships; those approved links can guide the independent retrievals and deterministic combination. Do not
+invent a comparison, prior period, or causal explanation. The purpose is user-visible: explain the answer in plain language without table
+names or SQL. Earlier answered clarifications are authoritative: reuse them unless the user explicitly changes them.

@@ -364,13 +364,12 @@ async def test_guardian_agent_uses_the_documented_content_search_parameters(
     assert requests == [
         {
             "method": "GET",
-            "url": "https://content.guardianapis.com/search",
-            "params": {
-                "q": "Tel Aviv",
-                "from-date": "2024-07-01",
-                "to-date": "2024-07-30",
-                "order-by": "newest",
-                "page-size": "10",
+                "url": "https://content.guardianapis.com/search",
+                "params": {
+                    "q": "Tel Aviv",
+                    "from-date": "2024-07-01",
+                    "to-date": "2024-07-30",
+                    "page-size": "50",
                 "show-fields": "trailText",
                 "api-key": "test-secret",
             },
@@ -381,6 +380,7 @@ async def test_guardian_agent_uses_the_documented_content_search_parameters(
     assert finding.observation == "Reported event in Tel Aviv"
     assert finding.source_title == "The Guardian: World news"
     assert "api-key" not in finding.source_url
+    assert [candidate.title for candidate in finding.candidates] == ["Reported event in Tel Aviv"]
 
 
 def test_research_agent_catalog_supports_a_declarative_keyed_json_api() -> None:

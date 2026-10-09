@@ -231,7 +231,7 @@ The validator is defense in depth, not a substitute for a database role with min
 
 ## Benchmarks
 
-The checked-in scenarios cover payment regression, duplicate ingestion, supplier inventory, historical weather, FX-driven margin pressure, a major technology outage, and a storm negative control. Ground truth specifies expected evidence, allowed external routes, and forbidden conclusions.
+The checked-in scenarios cover payment regression, duplicate ingestion, supplier inventory, historical weather, a local geopolitical disruption, FX-driven margin pressure, a major technology outage, and a storm negative control. Ground truth specifies expected evidence, allowed external routes, and forbidden conclusions.
 
 ```bash
 python examples/evaluate.py \

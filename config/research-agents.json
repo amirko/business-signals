@@ -234,11 +234,10 @@
             "name": "search",
             "url": "https://content.guardianapis.com/search",
             "query": {
-              "q": "{subject}",
+          "q": "{subject}",
               "from-date": "{start_date}",
               "to-date": "{end_date}",
-              "order-by": "newest",
-              "page-size": "10",
+          "page-size": "50",
               "show-fields": "trailText"
             }
           }
@@ -249,7 +248,15 @@
           "no_result_observation_template": "No matching major event was found.",
           "source_title_template": "The Guardian: {sectionName}",
           "source_url_template": "{webUrl}",
-          "confidence": 0.68
+      "confidence": 0.68,
+      "relevance_selection": {
+        "title_path": "webTitle",
+        "url_path": "webUrl",
+        "summary_path": "fields.trailText",
+        "section_path": "sectionName",
+        "published_at_path": "webPublicationDate",
+        "max_candidates": 50
+      }
         }
       },
       "source_url": "https://open-platform.theguardian.com/"

@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from business_signals.config import settings
-from business_signals.models import ExternalFinding, ExternalMeasurement
+from business_signals.models import ExternalFinding, ExternalMeasurement, ExternalResearchCandidate
 from business_signals.research_agents import (
     ApiKeyAuthentication,
     BatchCoordinatesStep,
@@ -192,6 +192,35 @@ class ExternalResearcher:
             parsed = parsed.copy_remove_param(authentication.name)
         return str(parsed)
 
+    @staticmethod
+    def _first_text_at_path(item: dict[str, Any], path: str | None) -> str | None:
+        if not path:
+            return None
+        values = json_values(item, path)
+        return str(values[0]) if values and values[0] is not None else None
+
+    @classmethod
+    def _research_candidates(cls, rows: list[dict[str, Any]], runner: Any) -> list[ExternalResearchCandidate]:
+        selection = runner.response.relevance_selection
+        if selection is None:
+            return []
+        candidates: list[ExternalResearchCandidate] = []
+        for item in rows[:selection.max_candidates]:
+            title = cls._first_text_at_path(item, selection.title_path)
+            url = cls._first_text_at_path(item, selection.url_path)
+            if not title or not url:
+                continue
+            candidates.append(
+                ExternalResearchCandidate(
+                    title=title,
+                    url=url,
+                    summary=cls._first_text_at_path(item, selection.summary_path),
+                    section=cls._first_text_at_path(item, selection.section_path),
+                    published_at=cls._first_text_at_path(item, selection.published_at_path),
+                )
+            )
+        return candidates
+
     async def research(
         self,
         category: str,
@@ -295,6 +324,7 @@ class ExternalResearcher:
                 runner.response.no_result_observation_template or "No matching records were returned by {agent_name}", values
             )
             source_url, source_title = last_url, agent.name
+        candidates = self._research_candidates(rows, runner)
         finding = ExternalFinding(
             type=agent.id,
             period=f"{start_date} to {end_date}",
@@ -303,6 +333,7 @@ class ExternalResearcher:
             confidence=runner.response.confidence,
             source_url=source_url,
             source_title=source_title,
+            candidates=candidates,
         )
         logger.info(
             "External agent finding: agent=%s period=%s observation=%r source_url=%s",

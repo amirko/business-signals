@@ -1,8 +1,15 @@
 from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Research-agent configurations refer to credential names rather than secret
+# values. Their generic executor reads those names from the process
+# environment, so load the same local .env file used by Settings without
+# overwriting explicitly exported environment variables.
+load_dotenv(".env", override=False)
 
 
 class Settings(BaseSettings):
@@ -32,6 +39,8 @@ class Settings(BaseSettings):
     web_origin: str = "http://localhost:3000"
     checkpoint_database_url: str = "postgresql://investigator:investigator@localhost:5432/catalog"
     checkpoint_schema: str = "business_signals"
+    checkpoint_pool_min_size: int = Field(default=1, ge=1)
+    checkpoint_pool_max_size: int = Field(default=10, ge=1)
     datasource_store_path: Path = Path(".business-signals/datasources.json")
     investigation_store_dir: Path = Path(".business-signals/investigations")
     research_agent_catalog_path: Path = Path("config/research-agents.json")

@@ -353,6 +353,56 @@ async def test_decision_does_not_finish_before_an_untested_external_cause_is_dis
 
 
 @pytest.mark.asyncio
+async def test_decision_runs_an_eligible_external_check_before_accepting_an_internal_root_cause() -> None:
+    state = InvestigationState(
+        investigation_id="inv_external_before_internal_conclusion",
+        question="Why did outdoor-product sales in Milan fall in July 2024 compared with June?",
+        datasources=[],
+        premise_status="confirmed",
+        query_count=1,
+        hypotheses=[
+            {
+                "id": "hyp_visits",
+                "name": "Lower store visits",
+                "description": "Fewer shoppers visited stores.",
+                "category": "traffic",
+                "confidence": 0.9,
+                "status": "supported",
+            },
+            {
+                "id": "hyp_weather",
+                "name": "Weather disruption",
+                "description": "Weather may have reduced store visits.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.4,
+            },
+        ],
+        evidence=[
+            {
+                "id": "ev_visits",
+                "description": "Store visits fell during the comparison period.",
+                "source": "traffic records",
+                "relationship": "direct",
+                "basis": "direct",
+                "confidence": 0.9,
+                "hypothesis_ids": ["hyp_visits"],
+            }
+        ],
+    )
+    engine = InvestigationEngine(
+        DatasourceRegistry(),
+        llm=UnexpectedLLM(),
+        researcher=ExternalResearchFixture(),
+    )
+
+    result = await engine._decide(state)
+
+    assert result["next_action"] == "external"
+
+
+@pytest.mark.asyncio
 async def test_relevant_external_research_runs_after_the_internal_runtime_budget_is_spent() -> None:
     state = InvestigationState(
         investigation_id="inv_external_after_budget",
@@ -739,6 +789,41 @@ async def test_measure_clarification_is_not_discarded_when_a_catalog_term_is_inf
     )
     assert update["status"] == InvestigationStatus.WAITING_FOR_HUMAN
     assert registry.source.queries == []
+
+
+class LowConfidenceMeasureWithoutQuestionLLM:
+    async def structured(self, response_model, _instruction: str, _payload: dict):
+        assert response_model is QuestionUnderstanding
+        return QuestionUnderstanding.model_validate({
+            "metric_definition": {
+                "name": "Physical-store revenue",
+                "expression": "Total amount paid in physical stores",
+                "unit": "local currency",
+                "confidence": 0.7,
+            },
+            "scope": {"filters": ["Dubai"]},
+            "premise_to_validate": "Physical-store revenue declined in the later period.",
+        })
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_measure_without_model_question_requests_clarification_before_validation() -> None:
+    registry = VocabularyRegistry()
+    engine = InvestigationEngine(registry, llm=LowConfidenceMeasureWithoutQuestionLLM())  # type: ignore[arg-type]
+    state = InvestigationState(
+        investigation_id="inv_low_confidence_measure",
+        question="Why did physical-store revenue in Dubai fall?",
+        datasources=[registry.source.summary],
+    )
+
+    update = await engine._understand(state)
+
+    assert update["pending_human_question"] == (
+        "How should I define \u201cPhysical-store revenue\u201d for this analysis? "
+        "Please say what it should include or exclude."
+    )
+    assert update["human_resume_node"] == "validate_premise"
+    assert update["status"] == InvestigationStatus.WAITING_FOR_HUMAN
 
 
 class SetComparisonDatasource:
@@ -1216,6 +1301,22 @@ def test_declared_cross_datasource_lookups_replace_only_neutral_planner_placehol
     assert "product_ids" not in rewritten
     assert "milan_stores" not in rewritten
     assert validate_query_tables(rewritten, {"public.sales_events"}) == rewritten
+
+    bare_placeholder = engine._remove_planner_lookup_placeholders(
+        "SELECT * FROM public.sales_events WHERE store_id IN (SELECT relationship_key)",
+        [
+            CrossDatasourceLookup(
+                datasource_id="catalog",
+                relation_id="rel_store",
+                sql="SELECT id AS relationship_key FROM public.stores",
+                purpose="Find selected stores.",
+            )
+        ],
+        {"public.sales_events"},
+    )
+
+    assert "relationship_key" not in bare_placeholder
+    assert validate_query_tables(bare_placeholder, {"public.sales_events"}) == bare_placeholder
 
 
 @pytest.mark.asyncio
@@ -2767,7 +2868,7 @@ async def test_investigation_filters_a_primary_target_source_with_a_reverse_appr
         {"id": "analytics", "tables": [{"name": "public.sales_events", "columns": [], "foreign_keys": []}]},
     ]
 
-    sql, steps, query_count, coverage = await engine._apply_cross_datasource_lookups(
+    sql, steps, query_count, coverage, cache_entries = await engine._apply_cross_datasource_lookups(
         state,
         "catalog",
         "SELECT p.id FROM public.products AS p WHERE p.name = 'Lantern'",
@@ -2787,3 +2888,24 @@ async def test_investigation_filters_a_primary_target_source_with_a_reverse_appr
     assert steps[0].datasource_id == "analytics"
     assert query_count == 1
     assert coverage[0].matched_records == 1
+    assert len(cache_entries) == 1
+
+    resumed_state = state.model_copy(update={"cross_datasource_lookup_cache": cache_entries})
+    _, _, reused_query_count, _, reused_cache_entries = await engine._apply_cross_datasource_lookups(
+        resumed_state,
+        "catalog",
+        "SELECT p.id FROM public.products AS p WHERE p.name = 'Lantern'",
+        [CrossDatasourceLookup(
+            datasource_id="analytics",
+            relation_id="rel_item",
+            sql="SELECT DISTINCT item_id AS relationship_key FROM public.sales_events",
+            purpose="Find catalog items with recorded sales.",
+        )],
+        metadata,
+    )
+
+    assert reused_query_count == 0
+    assert reused_cache_entries == []
+    assert registry.analytics.queries == [
+        "SELECT DISTINCT item_id AS relationship_key FROM public.sales_events LIMIT 500"
+    ]

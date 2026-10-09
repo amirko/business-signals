@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, InvalidOperation
 import re
 from typing import Any
 
@@ -407,7 +408,12 @@ class DirectAnswerMixin:
             combination = plan.combination
             if combination.supporting_query_index >= len(plan.supporting_queries):
                 raise UnsafeQueryError("Direct-answer combination refers to a missing supporting query")
-            if combination.operation == "intersection" and primary_entity_filter_applied:
+            if combination.operation == "aggregate":
+                # The requested group label can arrive from a related source.
+                # Merge it below before calculating from the complete result
+                # set, rather than asking the model to add a truncated page.
+                pass
+            elif combination.operation == "intersection" and primary_entity_filter_applied:
                 # The trusted relationship already narrowed the SQL result. A planner-produced
                 # in-memory intersection can accidentally select an unrelated supporting query
                 # (for example, store IDs) and turn valid rows into a false empty result.
@@ -447,6 +453,8 @@ class DirectAnswerMixin:
                 for index, item in enumerate(executed_results[1:], start=1)
             ],
         )
+        if plan.combination is not None and plan.combination.operation == "aggregate":
+            rows = self._aggregate_direct_answer_rows(rows, plan.combination)
         enriched_rows, enrichment_steps, enrichment_queries, resolved_entities = await self._resolve_display_names(
             state, metadata, datasource_id, sql, rows
         )
@@ -812,6 +820,65 @@ class DirectAnswerMixin:
     def _combination_row_key(row: dict[str, Any], fields: list[str]) -> tuple[str, ...]:
         """Use an ordered tuple so a composite group can be combined deterministically."""
         return tuple(str(row[field]) for field in fields)
+
+    @classmethod
+    def _aggregate_direct_answer_rows(cls, rows: list[dict[str, Any]], combination: Any) -> list[dict[str, Any]]:
+        """Group complete, joined direct-answer rows without model arithmetic.
+
+        Direct answers may need a readable dimension that comes from another
+        selected datasource.  Raw query results remain capped only when they
+        are finally displayed; this operation runs first over every returned
+        row so a category, supplier, or similar breakdown is exact.
+        """
+        if not combination.group_by or not combination.measure or not combination.aggregation:
+            raise UnsafeQueryError("Direct-answer aggregate requires group_by, measure, and aggregation fields")
+        group_fields = cls._combination_fields(combination.group_by)
+        measure_fields = cls._combination_fields(combination.measure)
+        if len(measure_fields) != 1:
+            raise UnsafeQueryError("Direct-answer aggregate accepts exactly one measure field")
+        measure = measure_fields[0]
+        required_fields = [*group_fields, measure]
+        if any(any(field not in row for field in required_fields) for row in rows):
+            raise UnsafeQueryError("Direct-answer aggregate refers to fields not returned by its queries")
+
+        groups: dict[tuple[str, ...], tuple[dict[str, Any], list[Decimal]]] = {}
+        for row in rows:
+            key = cls._combination_row_key(row, group_fields)
+            group, values = groups.setdefault(key, ({field: row[field] for field in group_fields}, []))
+            value = cls._decimal_measure(row[measure])
+            if value is not None:
+                values.append(value)
+
+        aggregate_rows: list[dict[str, Any]] = []
+        for group, values in groups.values():
+            if combination.aggregation == "sum":
+                aggregate_value: Decimal | None = sum(values, Decimal("0")) if values else None
+            elif combination.aggregation == "average":
+                aggregate_value = sum(values, Decimal("0")) / len(values) if values else None
+            elif combination.aggregation == "minimum":
+                aggregate_value = min(values) if values else None
+            else:
+                aggregate_value = max(values) if values else None
+            aggregate_rows.append({**group, measure: aggregate_value})
+        logger.info(
+            "Aggregated complete direct-answer result: operation=%s input_rows=%d output_groups=%d group_by=%s measure=%s",
+            combination.aggregation,
+            len(rows),
+            len(aggregate_rows),
+            ",".join(group_fields),
+            measure,
+        )
+        return aggregate_rows
+
+    @staticmethod
+    def _decimal_measure(value: Any) -> Decimal | None:
+        """Accept database numeric values without treating booleans or text labels as measures."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            raise UnsafeQueryError("Direct-answer aggregate measure contains a non-numeric value") from None
 
     def _relation_for_primary_filter(
         self,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg import AsyncConnection, sql
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -25,18 +28,37 @@ from business_signals.models import (
 from business_signals.research_agents import ResearchAgent, ResearchAgentCatalog
 from business_signals.service import InvestigationService
 
+logger = logging.getLogger("uvicorn.error")
+
+
+async def _configure_checkpoint_connection(connection: AsyncConnection) -> None:
+    """Apply the checkpoint schema to every connection leased from the pool."""
+    await connection.execute(
+        sql.SQL("SET search_path TO {}, public").format(sql.Identifier(settings.checkpoint_schema))
+    )
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Attach the graph to the project PostgreSQL instance for restart-safe checkpoints."""
+    """Attach the graph to the project PostgreSQL instance for restart-safe checkpoints.
+
+    The database is also used by the local Docker fixtures.  A fixture reload
+    restarts PostgreSQL, so a single long-lived connection would remain broken
+    for the lifetime of the API process.  A pool discards that connection and
+    opens a fresh one for subsequent graph operations.
+    """
     async with await AsyncConnection.connect(settings.checkpoint_database_url, autocommit=True) as connection:
         await connection.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(settings.checkpoint_schema)))
-    async with AsyncPostgresSaver.from_conn_string(
-        settings.checkpoint_database_url, serde=InvestigationEngine.checkpoint_serde()
-    ) as checkpointer:
-        await checkpointer.conn.execute(
-            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(settings.checkpoint_schema))
-        )
+    async with AsyncConnectionPool(
+        conninfo=settings.checkpoint_database_url,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        configure=_configure_checkpoint_connection,
+        min_size=settings.checkpoint_pool_min_size,
+        max_size=settings.checkpoint_pool_max_size,
+        open=False,
+    ) as checkpoint_pool:
+        await checkpoint_pool.open(wait=True)
+        checkpointer = AsyncPostgresSaver(checkpoint_pool, serde=InvestigationEngine.checkpoint_serde())
         await checkpointer.setup()
         investigations.set_checkpointer(checkpointer)
         yield
@@ -173,15 +195,21 @@ async def delete_cross_datasource_relationship(relationship_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
+@app.post("/api/investigations", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
 async def create_investigation(payload: InvestigationCreate) -> InvestigationState:
     try:
         return await investigations.create(payload)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Could not start investigation because a selected datasource is unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail="A selected datasource is unavailable. Check its connection and try again.",
+        ) from exc
 
 
-@app.get("/api/investigations", response_model=list[InvestigationState], response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
+@app.get("/api/investigations", response_model=list[InvestigationState], response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
 async def list_investigations() -> list[InvestigationState]:
     return investigations.list()
 
@@ -194,7 +222,7 @@ async def delete_all_investigations() -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.get("/api/investigations/{investigation_id}", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
+@app.get("/api/investigations/{investigation_id}", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
 async def get_investigation(investigation_id: str) -> InvestigationState:
     try:
         return investigations.get(investigation_id)
@@ -212,7 +240,7 @@ async def delete_investigation(investigation_id: str) -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/stop", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"})
+@app.post("/api/investigations/{investigation_id}/stop", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
 async def stop_investigation(investigation_id: str) -> InvestigationState:
     try:
         return await investigations.stop(investigation_id)
@@ -248,7 +276,7 @@ async def stream_events(
     return EventSourceResponse(generate(), ping=15)
 
 
-@app.post("/api/investigations/{investigation_id}/responses", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/responses", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
 async def respond_to_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.respond(investigation_id, payload.response)
@@ -258,7 +286,7 @@ async def respond_to_investigation(investigation_id: str, payload: HumanResponse
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
 async def follow_up_on_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.follow_up(investigation_id, payload.response)
@@ -268,7 +296,7 @@ async def follow_up_on_investigation(investigation_id: str, payload: HumanRespon
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/skip-clarification", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache"}, status_code=202)
+@app.post("/api/investigations/{investigation_id}/skip-clarification", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
 async def skip_investigation_clarification(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.skip_clarification(investigation_id, payload.response)
