@@ -583,7 +583,12 @@ class InvestigationEngine(DirectAnswerMixin):
             update = update.model_copy(update={"requirements": current.requirements})
             if current.id not in direct_claim_ids:
                 status = HypothesisStatus.SUPPORTED if update.status == HypothesisStatus.CONFIRMED else update.status
-                update = update.model_copy(update={"status": status, "confidence": min(update.confidence, 0.74)})
+                update = update.model_copy(
+                    update={
+                        "status": status,
+                        "confidence": min(update.confidence, settings.indirect_evidence_confidence_ceiling),
+                    }
+                )
             merged.append(update)
         return merged
 
@@ -1575,7 +1580,7 @@ class InvestigationEngine(DirectAnswerMixin):
         lookup_query_count = 0
         new_lookup_cache_entries: list[CrossDatasourceLookupCacheEntry] = []
         cached_result: QueryResultCacheEntry | None = None
-        for attempt in range(2):
+        for attempt in range(settings.query_repair_max_attempts):
             try:
                 sql = self._remove_planner_lookup_placeholders(sql, result.cross_datasource_lookups, allowed_tables)
                 sql = validate_query_tables(
@@ -1647,7 +1652,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 UnsafeQueryError,
                 KeyError,
             ) as exc:
-                if attempt:
+                if attempt + 1 >= settings.query_repair_max_attempts:
                     return await self._record_step_failure(state, exc)
                 logger.warning(
                     "Generated query was rejected; requesting one corrected query: datasource=%s error=%s",
@@ -1701,7 +1706,13 @@ class InvestigationEngine(DirectAnswerMixin):
                 name_steps,
                 name_query_count,
                 resolved_entities,
-            ) = await self._resolve_display_names(state, metadata, datasource_id, sql, rows[:100])
+            ) = await self._resolve_display_names(
+                state,
+                metadata,
+                datasource_id,
+                sql,
+                rows[: settings.entity_lookup_max_rows],
+            )
         else:
             display_rows = cached_result.display_rows
             name_steps = []
@@ -2052,7 +2063,7 @@ class InvestigationEngine(DirectAnswerMixin):
                     raise UnsafeQueryError("Cross-datasource lookup must return the approved relationship key")
                 values = list(
                     dict.fromkeys(str(row[CROSS_DATASOURCE_LOOKUP_KEY]) for row in lookup_rows if row.get(CROSS_DATASOURCE_LOOKUP_KEY) is not None)
-                )[:500]
+                )[: settings.cross_datasource_lookup_max_values]
                 source_row_count = len(lookup_rows)
                 cache_entries.append(
                     CrossDatasourceLookupCacheEntry(
@@ -2070,7 +2081,10 @@ class InvestigationEngine(DirectAnswerMixin):
                 ScopeCoverage(
                     description=lookup.purpose,
                     matched_records=len(values),
-                    limited=source_row_count > len(values) or source_row_count >= 500,
+                    limited=(
+                        source_row_count > len(values)
+                        or source_row_count >= settings.cross_datasource_lookup_max_values
+                    ),
                 )
             )
             if not query_references_table(filtered_sql, primary_field.rsplit(".", 1)[0]):
@@ -2305,7 +2319,10 @@ class InvestigationEngine(DirectAnswerMixin):
             return {"next_action": "external", "status": InvestigationStatus.RUNNING}
 
         supported = [h for h in state.hypotheses if h.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}]
-        has_high_confidence_root = any(hypothesis.confidence >= 0.78 for hypothesis in supported)
+        has_high_confidence_root = any(
+            hypothesis.confidence >= settings.supported_hypothesis_confidence_threshold
+            for hypothesis in supported
+        )
         has_direct_evidence = any(
             evidence.relationship == "direct"
             and evidence.basis == "direct"
@@ -2390,14 +2407,14 @@ class InvestigationEngine(DirectAnswerMixin):
             if self._has_unavailable_aggregate_result(direct_result):
                 analysis = FinalAnalysis(
                     likely_root_cause="Requested total is not available from the connected data",
-                    confidence=0.95,
+                    confidence=settings.unavailable_data_confidence,
                     evidence=[
                         Evidence(
                             id="unavailable_requested_total",
                             description="The selected records do not contain a revenue value that can be matched to the requested category and period.",
                             source="selected connected records",
                             relationship="direct",
-                            confidence=0.95,
+                            confidence=settings.unavailable_data_confidence,
                             data=[EvidenceDataPoint(field="Requested total", value="Not available")],
                         )
                     ],
@@ -2569,7 +2586,7 @@ class InvestigationEngine(DirectAnswerMixin):
             hypothesis
             for hypothesis in state.hypotheses
             if hypothesis.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}
-            and hypothesis.confidence >= 0.78
+            and hypothesis.confidence >= settings.supported_hypothesis_confidence_threshold
             and any(
                 evidence.relationship in {"direct", "supporting"}
                 and evidence.basis == "direct"
@@ -2581,7 +2598,7 @@ class InvestigationEngine(DirectAnswerMixin):
         if analysis.likely_root_cause is None and supported_with_direct_evidence:
             leading_hypothesis = max(supported_with_direct_evidence, key=lambda hypothesis: hypothesis.confidence)
             analysis = analysis.model_copy(update={"likely_root_cause": leading_hypothesis.description})
-        if analysis.confidence < 0.55 or not state.evidence:
+        if analysis.confidence < settings.insufficient_evidence_confidence_threshold or not state.evidence:
             analysis = analysis.model_copy(
                 update={
                     "likely_root_cause": None,
@@ -2591,10 +2608,13 @@ class InvestigationEngine(DirectAnswerMixin):
                     ],
                 }
             )
-        elif not supported_with_direct_evidence and analysis.confidence >= 0.75:
+        elif (
+            not supported_with_direct_evidence
+            and analysis.confidence >= settings.direct_evidence_conclusion_confidence_threshold
+        ):
             analysis = analysis.model_copy(
                 update={
-                    "confidence": 0.74,
+                    "confidence": settings.indirect_evidence_confidence_ceiling,
                     "caveats": [
                         *analysis.caveats,
                         "The available findings do not include a direct measurement of the proposed cause, so the conclusion is limited to a plausible explanation.",

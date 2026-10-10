@@ -38,6 +38,7 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
         investigation_max_iterations=21,
         investigation_max_sql_queries=34,
         investigation_max_external_calls=5,
+        external_research_checks_per_batch=2,
         investigation_max_duration_seconds=900,
         ignore_investigation_limits=True,
         metric_definition_confidence=0.72,
@@ -45,11 +46,29 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
         source_reliability_default=0.61,
         target_cell_area_km2=1250,
         max_points_weather_api=42,
+        external_http_timeout_seconds=17,
+        external_research_max_period_days=730,
+        anthropic_http_timeout_seconds=75,
+        anthropic_max_tokens=2048,
+        query_repair_max_attempts=3,
+        entity_lookup_max_rows=75,
+        cross_datasource_lookup_max_values=250,
+        direct_answer_display_max_rows=400,
+        retained_entity_reference_max_count=80,
+        cross_datasource_relation_sample_size=90,
+        cross_datasource_relation_min_sample_values=4,
+        cross_datasource_relation_min_coverage=0.92,
+        supported_hypothesis_confidence_threshold=0.81,
+        insufficient_evidence_confidence_threshold=0.51,
+        direct_evidence_conclusion_confidence_threshold=0.77,
+        indirect_evidence_confidence_ceiling=0.76,
+        unavailable_data_confidence=0.93,
     )
 
     assert configured.investigation_max_iterations == 21
     assert configured.investigation_max_sql_queries == 34
     assert configured.investigation_max_external_calls == 5
+    assert configured.external_research_checks_per_batch == 2
     assert configured.investigation_max_duration_seconds == 900
     assert configured.ignore_investigation_limits is True
     assert configured.metric_definition_confidence == 0.72
@@ -57,6 +76,23 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
     assert configured.source_reliability_default == 0.61
     assert configured.target_cell_area_km2 == 1250
     assert configured.max_points_weather_api == 42
+    assert configured.external_http_timeout_seconds == 17
+    assert configured.external_research_max_period_days == 730
+    assert configured.anthropic_http_timeout_seconds == 75
+    assert configured.anthropic_max_tokens == 2048
+    assert configured.query_repair_max_attempts == 3
+    assert configured.entity_lookup_max_rows == 75
+    assert configured.cross_datasource_lookup_max_values == 250
+    assert configured.direct_answer_display_max_rows == 400
+    assert configured.retained_entity_reference_max_count == 80
+    assert configured.cross_datasource_relation_sample_size == 90
+    assert configured.cross_datasource_relation_min_sample_values == 4
+    assert configured.cross_datasource_relation_min_coverage == 0.92
+    assert configured.supported_hypothesis_confidence_threshold == 0.81
+    assert configured.insufficient_evidence_confidence_threshold == 0.51
+    assert configured.direct_evidence_conclusion_confidence_threshold == 0.77
+    assert configured.indirect_evidence_confidence_ceiling == 0.76
+    assert configured.unavailable_data_confidence == 0.93
 
 
 def test_research_agent_reliability_uses_the_configured_default(monkeypatch) -> None:

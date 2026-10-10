@@ -12,6 +12,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlglot import expressions as exp
 
 from business_signals.analytics import summarize_query_rows
+from business_signals.config import settings
 from business_signals.datasources.safety import (
     UnsafeQueryError,
     query_references_table,
@@ -505,7 +506,13 @@ class DirectAnswerMixin:
                 else None
             )
             supporting_rows = executed[supporting_index][0]
-            values = list(dict.fromkeys(str(row[supporting_fields[0]]) for row in supporting_rows if row.get(supporting_fields[0]) is not None))[:100]
+            values = list(
+                dict.fromkeys(
+                    str(row[supporting_fields[0]])
+                    for row in supporting_rows
+                    if row.get(supporting_fields[0]) is not None
+                )
+            )[: settings.cross_datasource_lookup_max_values]
             if relation is not None and values:
                 query_plans[0] = query_plans[0].model_copy(
                     update={"sql": self._add_relation_filter(query_plans[0].sql, relation.source_field, values)}
@@ -586,7 +593,7 @@ class DirectAnswerMixin:
         observation = Observation(
             description=purpose,
             value={
-                "rows": user_facing_rows[:100],
+                "rows": user_facing_rows[: settings.direct_answer_display_max_rows],
                 "deterministic_summary": summarize_query_rows(user_facing_rows),
             },
             source=datasource_id,
@@ -611,7 +618,7 @@ class DirectAnswerMixin:
         by_identity = {(entity.datasource_id, entity.table, entity.identifier_field, entity.identifier): entity for entity in existing}
         for entity in new:
             by_identity[(entity.datasource_id, entity.table, entity.identifier_field, entity.identifier)] = entity
-        return list(by_identity.values())[-100:]
+        return list(by_identity.values())[-settings.retained_entity_reference_max_count :]
 
     def _merge_query_scope(self, state: InvestigationState, datasource_id: str, sql: str) -> list[QueryScope]:
         """Persist reusable non-entity predicates such as time range and payment status."""
@@ -1063,7 +1070,7 @@ class DirectAnswerMixin:
                 raise UnsafeQueryError("Direct-answer query selected a datasource outside this request")
         source_metadata = next(source for source in metadata if source["id"] == query.datasource_id)
         allowed_tables = {table["name"] for table in source_metadata["tables"]}
-        for attempt in range(2):
+        for attempt in range(settings.query_repair_max_attempts):
             try:
                 bound_sql = self._case_insensitive_text_filters(self._bind_trusted_entity_references(state, query))
                 safe_sql = validate_query_tables(validate_read_query(bound_sql), allowed_tables)
@@ -1100,7 +1107,7 @@ class DirectAnswerMixin:
                 )
                 return rows, query.datasource_id, safe_sql, purpose
             except (ProgrammingError, UnsafeQueryError) as exc:
-                if attempt:
+                if attempt + 1 >= settings.query_repair_max_attempts:
                     raise
                 logger.warning(
                     "Direct-answer query was rejected; requesting one corrected query: datasource=%s error=%s",
@@ -1316,7 +1323,13 @@ class DirectAnswerMixin:
             target_identifier,
             display_column,
         ) in lookup_candidates:
-            identifiers = list(dict.fromkeys(str(row[identifier_column]) for row in rows if row.get(identifier_column) is not None))[:100]
+            identifiers = list(
+                dict.fromkeys(
+                    str(row[identifier_column])
+                    for row in rows
+                    if row.get(identifier_column) is not None
+                )
+            )[: settings.entity_lookup_max_rows]
             identity = (identifier_column, candidate["id"], table["name"], target_identifier)
             if identifiers and identity not in seen_lookups:
                 seen_lookups.add(identity)

@@ -5,6 +5,8 @@ import re
 import sqlglot
 from sqlglot import expressions as exp
 
+from business_signals.config import settings
+
 
 class UnsafeQueryError(ValueError):
     pass
@@ -28,8 +30,9 @@ _FORBIDDEN = {
 CROSS_DATASOURCE_LOOKUP_KEY = "relationship_key"
 
 
-def validate_read_query(sql: str, max_rows: int = 500) -> str:
+def validate_read_query(sql: str, max_rows: int | None = None) -> str:
     """Return a normalized, row-limited SELECT or raise before touching a database."""
+    max_rows = settings.max_query_rows if max_rows is None else max_rows
     if not sql or not sql.strip():
         raise UnsafeQueryError("Query cannot be empty")
     if re.search(r"--|/\*|\*/", sql):

@@ -30,9 +30,33 @@ class Settings(BaseSettings):
     # Below this confidence, a proposed business measure is considered
     # unresolved and must not be replaced by catalog vocabulary inference.
     metric_definition_confidence: float = Field(default=0.75, ge=0, le=1)
+    # Limits for provider calls and bounded query repair. Keeping these here
+    # makes performance and cost trade-offs deploy-time decisions.
+    external_http_timeout_seconds: float = Field(default=12.0, gt=0)
+    external_research_max_period_days: int = Field(default=3660, ge=1)
+    anthropic_http_timeout_seconds: float = Field(default=60.0, gt=0)
+    anthropic_max_tokens: int = Field(default=4096, ge=1)
+    query_repair_max_attempts: int = Field(default=2, ge=1)
+    entity_lookup_max_rows: int = Field(default=100, ge=1)
+    cross_datasource_lookup_max_values: int = Field(default=500, ge=1)
+    direct_answer_display_max_rows: int = Field(default=500, ge=1)
+    retained_entity_reference_max_count: int = Field(default=100, ge=1)
+    cross_datasource_relation_sample_size: int = Field(default=100, ge=1)
+    cross_datasource_relation_min_sample_values: int = Field(default=5, ge=1)
+    cross_datasource_relation_min_coverage: float = Field(default=0.95, ge=0, le=1)
+    # Confidence cutoffs that govern when the workflow can finish with a
+    # causal conclusion. They are policy choices, not model constants.
+    supported_hypothesis_confidence_threshold: float = Field(default=0.78, ge=0, le=1)
+    insufficient_evidence_confidence_threshold: float = Field(default=0.55, ge=0, le=1)
+    direct_evidence_conclusion_confidence_threshold: float = Field(default=0.75, ge=0, le=1)
+    indirect_evidence_confidence_ceiling: float = Field(default=0.74, ge=0, le=1)
+    unavailable_data_confidence: float = Field(default=0.95, ge=0, le=1)
     investigation_max_iterations: int = Field(default=8, ge=1)
     investigation_max_sql_queries: int = Field(default=12, ge=1)
     investigation_max_external_calls: int = Field(default=2, ge=0)
+    # Execute external checks in small batches so every finding can be
+    # assessed and attached to its claim before more are planned.
+    external_research_checks_per_batch: int = Field(default=1, ge=1)
     investigation_max_duration_seconds: int = Field(default=180, ge=10)
     ignore_investigation_limits: bool = False
     # Geographic weather summaries use one representative point per this many

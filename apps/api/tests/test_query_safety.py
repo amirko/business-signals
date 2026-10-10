@@ -113,7 +113,7 @@ def test_external_research_validates_bounded_dates_and_fixed_input_formats() -> 
     assert researcher._validated_period("2024-01-01", "2024-01-02")
     with pytest.raises(ValueError, match="end date"):
         researcher._validated_period("2024-02-01", "2024-01-01")
-    with pytest.raises(ValueError, match="ten years"):
+    with pytest.raises(ValueError, match="limited to"):
         researcher._validated_period("2010-01-01", "2024-01-01")
     with pytest.raises(ValueError, match="ordinary characters"):
         researcher._validated_subject("north\nitaly", "location")

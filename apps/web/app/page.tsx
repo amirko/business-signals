@@ -196,6 +196,26 @@ type RelationshipForm = {
   cardinality: 'many_to_one' | 'one_to_one';
 };
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+function publicPositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// These values are replaced at build time by Next.js. Rebuild the web app
+// after changing them in its environment.
+const savedItemsRefreshIntervalMs = publicPositiveInteger(
+  process.env.NEXT_PUBLIC_SAVED_ITEMS_REFRESH_INTERVAL_MS,
+  5000,
+);
+const investigationRetryIntervalMs = publicPositiveInteger(
+  process.env.NEXT_PUBLIC_INVESTIGATION_RETRY_INTERVAL_MS,
+  1000,
+);
+const investigationReconciliationIntervalMs = publicPositiveInteger(
+  process.env.NEXT_PUBLIC_INVESTIGATION_RECONCILIATION_INTERVAL_MS,
+  2500,
+);
 const activeInvestigationStorageKey =
   'business-signals.active-investigation-id';
 const investigationStepLabels: Record<string, string> = {
@@ -502,7 +522,10 @@ export default function Home() {
         .catch(() => undefined);
     };
     loadSavedRunCount();
-    const refreshTimer = window.setInterval(loadSavedRunCount, 5000);
+    const refreshTimer = window.setInterval(
+      loadSavedRunCount,
+      savedItemsRefreshIntervalMs,
+    );
     return () => window.clearInterval(refreshTimer);
   }, []);
 
@@ -1116,7 +1139,7 @@ function InvestigationView({
       if (!reconciled && epoch === investigationEpoch.current) {
         reconciliationTimer.current = window.setTimeout(() => {
           void poll();
-        }, 1000);
+        }, investigationRetryIntervalMs);
       }
     };
     void poll();
@@ -1140,7 +1163,7 @@ function InvestigationView({
     }, 0);
     const timer = window.setInterval(
       () => void reconcileInvestigationRef.current(investigationId, epoch),
-      2500,
+      investigationReconciliationIntervalMs,
     );
     return () => {
       window.clearTimeout(initialReconciliation);
@@ -3227,7 +3250,7 @@ function SavedInvestigationsView({
     }, 0);
     const refreshTimer = window.setInterval(() => {
       void loadInvestigations();
-    }, 5000);
+    }, savedItemsRefreshIntervalMs);
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(refreshTimer);

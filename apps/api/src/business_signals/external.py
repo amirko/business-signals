@@ -45,8 +45,8 @@ logger = logging.getLogger("uvicorn.error")
 class ExternalResearcher:
     """Execute catalog-defined public and authenticated HTTPS/JSON research workflows."""
 
-    def __init__(self, timeout: float = 12.0, catalog: ResearchAgentCatalog | None = None) -> None:
-        self.timeout = timeout
+    def __init__(self, timeout: float | None = None, catalog: ResearchAgentCatalog | None = None) -> None:
+        self.timeout = settings.external_http_timeout_seconds if timeout is None else timeout
         self.catalog = catalog or ResearchAgentCatalog.load(settings.research_agent_catalog_path)
 
     def available_agents(self) -> list[dict[str, Any]]:
@@ -124,8 +124,10 @@ class ExternalResearcher:
             raise ValueError("External research dates must use YYYY-MM-DD") from exc
         if end < start:
             raise ValueError("External research end date must not be before its start date")
-        if (end - start).days > 3660:
-            raise ValueError("External research periods are limited to ten years")
+        if (end - start).days > settings.external_research_max_period_days:
+            raise ValueError(
+                f"External research periods are limited to {settings.external_research_max_period_days} days"
+            )
         return start, end
 
     @staticmethod

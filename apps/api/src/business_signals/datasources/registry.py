@@ -209,10 +209,12 @@ class DatasourceRegistry:
     def _humanize_table_name(name: str) -> str:
         return name.replace("_", " ").strip().capitalize()
 
-    async def _distinct_values(self, datasource_id: str, field: str, limit: int = 100) -> list[str]:
+    async def _distinct_values(self, datasource_id: str, field: str) -> list[str]:
         table, column = self._quoted_field(field)
         rows = await self.get(datasource_id).execute_read_query(
-            f"SELECT DISTINCT {column} AS value FROM {table} WHERE {column} IS NOT NULL LIMIT {limit}"
+            "SELECT DISTINCT "
+            f"{column} AS value FROM {table} WHERE {column} IS NOT NULL "
+            f"LIMIT {settings.cross_datasource_relation_sample_size}"
         )
         return [str(row["value"]) for row in rows if row.get("value") is not None]
 
@@ -340,12 +342,12 @@ class DatasourceRegistry:
                                 sampled_values = await self._distinct_values(source.datasource_id, source_field)
                                 # Very low-cardinality fields (for example status flags) are too easy to
                                 # match by coincidence. This is a structural/data-quality filter, not a name rule.
-                                if len(sampled_values) < 5:
+                                if len(sampled_values) < settings.cross_datasource_relation_min_sample_values:
                                     continue
                                 matched_values = await self._matching_values(target.datasource_id, target_field, sampled_values)
                                 matched_count = sum(value in matched_values for value in sampled_values)
                                 coverage = matched_count / len(sampled_values)
-                                if coverage < 0.95:
+                                if coverage < settings.cross_datasource_relation_min_coverage:
                                     continue
                                 candidates.append(
                                     CrossDatasourceRelation(

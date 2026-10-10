@@ -284,7 +284,7 @@ class AnthropicLLM(LLM):
 
         request = {
             "model": settings.ai_model,
-            "max_tokens": 4096,
+            "max_tokens": settings.anthropic_max_tokens,
             "system": SYSTEM_PROMPT,
             "messages": [
                 {
@@ -302,7 +302,7 @@ class AnthropicLLM(LLM):
             "tool_choice": {"type": "tool", "name": "submit_structured_response"},
         }
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=settings.anthropic_http_timeout_seconds) as client:
                 response = await client.post(
                     self.endpoint,
                     headers={
