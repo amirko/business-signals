@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Any, Literal, TypeVar
 
 import httpx
@@ -18,6 +19,7 @@ from business_signals.models import (
     InvestigationScope,
     MetricDefinition,
 )
+from business_signals.observability import monitor
 from business_signals.prompt_catalog import prompts
 
 T = TypeVar("T", bound=BaseModel)
@@ -28,6 +30,42 @@ logger = logging.getLogger("uvicorn.error")
 
 
 SYSTEM_PROMPT = prompts.load("system")
+
+
+def _value_from_usage(usage: Any, *names: str) -> int | None:
+    """Read a token count from an SDK object or a JSON provider response."""
+    for name in names:
+        value = usage.get(name) if isinstance(usage, Mapping) else getattr(usage, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _normalize_token_usage(usage: Any) -> dict[str, int] | None:
+    """Map OpenAI-, Anthropic-, and Gemini-style response usage to LangSmith."""
+    if usage is None:
+        return None
+
+    input_tokens = _value_from_usage(usage, "input_tokens", "prompt_tokens", "prompt_token_count")
+    output_tokens = _value_from_usage(
+        usage,
+        "output_tokens",
+        "completion_tokens",
+        "response_token_count",
+        "candidates_token_count",
+    )
+    total_tokens = _value_from_usage(usage, "total_tokens", "total_token_count")
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    if total_tokens is None:
+        total_tokens = (input_tokens or 0) + (output_tokens or 0)
+
+    normalized = {"total_tokens": total_tokens}
+    if input_tokens is not None:
+        normalized["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        normalized["output_tokens"] = output_tokens
+    return normalized
 
 
 class QuestionUnderstanding(BaseModel):
@@ -201,8 +239,29 @@ class Synthesis(BaseModel):
 
 
 class LLM(ABC):
+    async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T:
+        step_name = response_model.__name__
+        question = str(payload.get("question", ""))
+        async with monitor.span(
+            f"LLM: {step_name}",
+            run_type="llm",
+            inputs=monitor.content_or_fingerprint(question),
+            metadata={
+                "provider": settings.ai_provider,
+                "model": settings.ai_model,
+                "step": step_name,
+                "datasource_count": len(payload.get("datasources", [])),
+                "question_fingerprint": monitor.content_or_fingerprint(question)["fingerprint"],
+            },
+            tags=["business-signals", "llm", step_name],
+        ) as trace:
+            result, token_usage = await self._structured(response_model, instruction, payload)
+            trace.set_output(response_schema=step_name, validated=True)
+            trace.set_usage_metadata(token_usage)
+            return result
+
     @abstractmethod
-    async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T: ...
+    async def _structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> tuple[T, dict[str, int] | None]: ...
 
 
 class OpenAICompatibleLLM(LLM):
@@ -211,7 +270,7 @@ class OpenAICompatibleLLM(LLM):
     def __init__(self) -> None:
         self.client: AsyncOpenAI | None = None
 
-    async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T:
+    async def _structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> tuple[T, dict[str, int] | None]:
         if not settings.ai_api_key:
             raise RuntimeError("AI_API_KEY is required when AI_PROVIDER is openai or openai_compatible")
         if self.client is None:
@@ -248,6 +307,7 @@ class OpenAICompatibleLLM(LLM):
                     raise RuntimeError("The model declined to produce the requested structured response")
                 raise RuntimeError("The model returned an empty structured response")
             result = message.parsed
+            token_usage = _normalize_token_usage(response.usage)
         except Exception:
             logger.exception("LLM step failed: provider=%s step=%s", settings.ai_provider, step_name)
             raise
@@ -258,7 +318,7 @@ class OpenAICompatibleLLM(LLM):
             step_name,
             result.model_dump_json(),
         )
-        return result
+        return result, token_usage
 
 
 class AnthropicLLM(LLM):
@@ -266,7 +326,7 @@ class AnthropicLLM(LLM):
 
     endpoint = "https://api.anthropic.com/v1/messages"
 
-    async def structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> T:
+    async def _structured(self, response_model: type[T], instruction: str, payload: dict[str, Any]) -> tuple[T, dict[str, int] | None]:
         if not settings.ai_api_key:
             raise RuntimeError("AI_API_KEY is required when AI_PROVIDER is anthropic")
 
@@ -313,7 +373,8 @@ class AnthropicLLM(LLM):
                     json=request,
                 )
                 response.raise_for_status()
-                content = response.json().get("content", [])
+                response_body = response.json()
+                content = response_body.get("content", [])
             tool_use = next(
                 (block for block in content if block.get("type") == "tool_use" and block.get("name") == "submit_structured_response"),
                 None,
@@ -321,6 +382,7 @@ class AnthropicLLM(LLM):
             if not tool_use or not isinstance(tool_use.get("input"), dict):
                 raise RuntimeError("The model did not return the required structured response")
             result = response_model.model_validate(tool_use["input"])
+            token_usage = _normalize_token_usage(response_body.get("usage"))
         except Exception:
             logger.exception("LLM step failed: provider=anthropic step=%s", step_name)
             raise
@@ -330,7 +392,7 @@ class AnthropicLLM(LLM):
             step_name,
             result.model_dump_json(),
         )
-        return result
+        return result, token_usage
 
 
 def create_llm() -> LLM:

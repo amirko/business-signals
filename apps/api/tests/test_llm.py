@@ -21,6 +21,7 @@ class FakeCompletions:
     async def parse(self, **kwargs: object) -> object:
         self.request = kwargs
         return SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8, total_tokens=20),
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
@@ -28,7 +29,7 @@ class FakeCompletions:
                         refusal=None,
                     )
                 )
-            ]
+            ],
         )
 
 
@@ -127,6 +128,26 @@ def test_evidence_assessment_has_a_closed_structured_output_schema() -> None:
 
     assert evidence["properties"]["data"]["type"] == "array"
     assert data_point["additionalProperties"] is False
+
+
+def test_token_usage_normalizes_provider_response_shapes() -> None:
+    from business_signals.llm import _normalize_token_usage
+
+    assert _normalize_token_usage({"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}) == {
+        "input_tokens": 12,
+        "output_tokens": 8,
+        "total_tokens": 20,
+    }
+    assert _normalize_token_usage({"input_tokens": 12, "output_tokens": 8}) == {
+        "input_tokens": 12,
+        "output_tokens": 8,
+        "total_tokens": 20,
+    }
+    assert _normalize_token_usage({"prompt_token_count": 12, "candidates_token_count": 8}) == {
+        "input_tokens": 12,
+        "output_tokens": 8,
+        "total_tokens": 20,
+    }
 
 
 def test_prompt_catalog_loads_packaged_versioned_instructions() -> None:

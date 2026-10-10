@@ -19,6 +19,7 @@ from business_signals.models import (
     InvestigationStep,
     Observation,
 )
+from business_signals.observability import monitor
 from business_signals.prompt_catalog import prompts
 
 logger = logging.getLogger("uvicorn.error")
@@ -515,10 +516,22 @@ class ExternalResearchCoordinator:
             # Preserve the five-argument research-agent contract for an ordinary
             # historical lookup. A comparison boundary is an opt-in extension for
             # agents that expose a time series.
-            if request.get("comparison_start_date"):
-                finding = await self.researcher.research(*research_args, request["comparison_start_date"])
-            else:
-                finding = await self.researcher.research(*research_args)
+            async with monitor.span(
+                f"External research: {agent_id}",
+                run_type="tool",
+                inputs=monitor.content_or_fingerprint(request["subject"]),
+                metadata={
+                    "agent_id": agent_id,
+                    "comparison": bool(request.get("comparison_start_date")),
+                    "subject_fingerprint": monitor.content_or_fingerprint(request["subject"])["fingerprint"],
+                },
+                tags=["business-signals", "external-research", agent_id],
+            ) as trace:
+                if request.get("comparison_start_date"):
+                    finding = await self.researcher.research(*research_args, request["comparison_start_date"])
+                else:
+                    finding = await self.researcher.research(*research_args)
+                trace.set_output(finding_returned=finding is not None)
             finding = await self._select_relevant_finding(state, request, finding)
             step = InvestigationStep(
                 iteration=state.iteration + 1,

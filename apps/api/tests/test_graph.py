@@ -930,6 +930,35 @@ class VocabularyClarificationLLM:
         )
 
 
+class CausalWhatQuestionLLM:
+    async def structured(self, response_model, _instruction: str, _payload: dict):
+        assert response_model is QuestionUnderstanding
+        return QuestionUnderstanding.model_validate(
+            {
+                "request_type": "investigation",
+                "premise_to_validate": "Outdoor product sales in Milan fell in July 2024.",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_causal_question_starting_with_what_is_not_forced_into_direct_answer_mode() -> None:
+    registry = VocabularyRegistry()
+    engine = InvestigationEngine(registry, llm=CausalWhatQuestionLLM())  # type: ignore[arg-type]
+    state = InvestigationState(
+        investigation_id="inv_what_caused",
+        question="What caused outdoor product sales to fall in Milan in July 2024?",
+        datasources=[registry.source.summary],
+        request_type="direct_answer",
+    )
+
+    update = await engine._understand(state)
+
+    assert update["request_type"] == "investigation"
+    assert update["premise_status"] == "pending"
+    assert InvestigationEngine._route_after_understanding(state.model_copy(update=update)) == "validate_premise"
+
+
 @pytest.mark.asyncio
 async def test_question_understanding_resolves_a_quoted_term_from_any_text_dimension() -> None:
     registry = VocabularyRegistry()

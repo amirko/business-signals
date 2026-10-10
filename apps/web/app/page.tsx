@@ -232,7 +232,7 @@ const investigationStepLabels: Record<string, string> = {
 };
 
 const defaultQuestion =
-  'What caused outdoor product sales to fall in Milan in July 2024?';
+  'Why did unit sales of outdoor products in Milan fall in July 2024 compared with June?';
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;

@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     ai_api_key: str | None = None
     ai_model: str = "gpt-5-mini"
     ai_base_url: str = "https://api.openai.com/v1"
+    # LangSmith is strictly optional observability. It must never prevent an
+    # investigation from running when unavailable or not configured.
+    langsmith_tracing: bool = False
+    langsmith_api_key: str | None = None
+    langsmith_project: str = "business-signals"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_capture_content: bool = False
     query_timeout_seconds: int = 15
     max_query_rows: int = 500
     # The maximum number of distinct values a text field may have before it is

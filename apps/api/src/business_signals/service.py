@@ -28,6 +28,7 @@ from business_signals.models import (
     InvestigationStatus,
     now_utc,
 )
+from business_signals.observability import monitor
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,34 @@ class InvestigationService:
         return state
 
     async def _run(
+        self,
+        investigation_id: str,
+        input_value: InvestigationState | Command[Any],
+        thread_id: str | None = None,
+    ) -> None:
+        question = input_value.question if isinstance(input_value, InvestigationState) else "conversation continuation"
+        async with monitor.span(
+            "Business Signals investigation",
+            run_type="chain",
+            inputs=monitor.content_or_fingerprint(question),
+            metadata={
+                "investigation_fingerprint": monitor.content_or_fingerprint(investigation_id)["fingerprint"],
+                "question_fingerprint": monitor.content_or_fingerprint(question)["fingerprint"],
+                "continuation": not isinstance(input_value, InvestigationState),
+            },
+            tags=["business-signals", "investigation"],
+        ) as trace:
+            await self._run_graph(investigation_id, input_value, thread_id)
+            current = self._records.get(investigation_id)
+            if current is not None:
+                trace.set_output(
+                    status=current.status.value,
+                    query_count=current.query_count,
+                    external_call_count=current.external_call_count,
+                    iteration=current.iteration,
+                )
+
+    async def _run_graph(
         self,
         investigation_id: str,
         input_value: InvestigationState | Command[Any],

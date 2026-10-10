@@ -18,6 +18,7 @@ from business_signals.models import (
     TableMetadata,
     now_utc,
 )
+from business_signals.observability import monitor
 
 
 class PostgreSQLDatasource(Datasource):
@@ -154,10 +155,19 @@ class PostgreSQLDatasource(Datasource):
 
     async def execute_read_query(self, query: str) -> list[dict[str, Any]]:
         safe_sql = validate_read_query(query, settings.max_query_rows)
-        async with self.engine.connect() as connection:
-            await connection.execute(text(f"SET LOCAL statement_timeout = {settings.query_timeout_seconds * 1000}"))
-            result = await connection.execute(text(safe_sql))
-            return [dict(row) for row in result.mappings()]
+        async with monitor.span(
+            "SQL read",
+            run_type="tool",
+            inputs=monitor.content_or_fingerprint(safe_sql),
+            metadata={"datasource_type": self.summary.type.value, "query_fingerprint": monitor.content_or_fingerprint(safe_sql)["fingerprint"]},
+            tags=["business-signals", "sql"],
+        ) as trace:
+            async with self.engine.connect() as connection:
+                await connection.execute(text(f"SET LOCAL statement_timeout = {settings.query_timeout_seconds * 1000}"))
+                result = await connection.execute(text(safe_sql))
+                rows = [dict(row) for row in result.mappings()]
+            trace.set_output(row_count=len(rows))
+            return rows
 
     async def get_statistics(self, entity: str) -> dict[str, Any]:
         safe_entity = entity.replace('"', '""')

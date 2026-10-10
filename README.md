@@ -145,6 +145,24 @@ GUARDIAN_API_KEY=your-key
 The catalog references only the environment-variable names; the executor injects keys server-side
 and removes query-string credentials from returned source links before findings are archived or shown.
 
+### Optional LangSmith monitoring
+
+Tracing is off by default. To monitor LangGraph investigations, custom structured LLM calls, SQL
+execution, and research-agent calls, add the following to the untracked `.env` file and restart the
+API:
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-key
+LANGSMITH_PROJECT=business-signals-dev
+LANGSMITH_CAPTURE_CONTENT=false
+```
+
+With content capture disabled, traces contain only operational metadata, fingerprints, durations,
+and outcomes—not question text, SQL, query rows, external-response bodies, or credentials. Set
+`LANGSMITH_CAPTURE_CONTENT=true` only for non-sensitive local fixture data. Monitoring failures are
+non-fatal and never stop an investigation.
+
 Start the API and web app in separate terminals:
 
 ```bash

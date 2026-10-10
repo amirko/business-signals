@@ -593,31 +593,6 @@ class InvestigationEngine(DirectAnswerMixin):
         return merged
 
     @staticmethod
-    def _is_direct_answer_request(question: str) -> bool:
-        normalized = question.strip().casefold()
-        direct_openers = (
-            "what",
-            "which",
-            "who",
-            "when",
-            "where",
-            "how many",
-            "list",
-            "show",
-            "give me",
-        )
-        direct_terms = (
-            "most popular",
-            "top-selling",
-            "top selling",
-            "highest",
-            "lowest",
-            "total",
-            "count",
-        )
-        return normalized.startswith(direct_openers) or any(term in normalized for term in direct_terms)
-
-    @staticmethod
     def _has_explicit_all_history_scope(question: str) -> bool:
         """Treat ordinary existence wording as a complete all-recorded-history scope."""
         normalized = question.casefold()
@@ -988,10 +963,11 @@ class InvestigationEngine(DirectAnswerMixin):
             },
         )
         observations = [Observation(description=item, source="question") for item in result.observations]
-        current_question = state.current_conversation_question or state.question
-        request_type = (
-            "direct_answer" if state.request_type == "direct_answer" or self._is_direct_answer_request(current_question) else result.request_type
-        )
+        # Request type is a semantic model decision. Do not override it based
+        # on wording such as “what” or a previous conversation turn: either
+        # can introduce a causal question that needs a premise check and
+        # hypotheses, or a factual follow-up that needs a direct answer.
+        request_type = result.request_type
         ambiguity = None if request_type == "direct_answer" and self._has_explicit_all_history_scope(state.question) else result.ambiguity
         # A measure ambiguity (for example, the business meaning of a
         # requested total) cannot be resolved from a catalog value. Preserve
