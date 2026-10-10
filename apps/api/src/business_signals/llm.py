@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from business_signals.config import settings
 from business_signals.models import (
     Evidence,
+    ExternalResearchCandidateRanking,
     FinalAnalysis,
     Hypothesis,
     InvestigationScope,
@@ -176,6 +177,8 @@ class ExternalResearchRelevance(BaseModel):
 
     candidate_index: int | None = Field(default=None, ge=0, le=49)
     relevance: Literal["relevant", "none"]
+    significance: Literal["major", "minor", "none"] = "none"
+    rankings: list[ExternalResearchCandidateRanking] = Field(default_factory=list, max_length=50)
     confidence: float = Field(ge=0, le=1)
     rationale: str = Field(min_length=1, max_length=500)
 

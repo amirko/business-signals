@@ -248,14 +248,15 @@
           "no_result_observation_template": "No matching major event was found.",
           "source_title_template": "The Guardian: {sectionName}",
           "source_url_template": "{webUrl}",
-      "source_reliability": 0.68,
-      "relevance_selection": {
+      "source_reliability": 0.80,
+        "relevance_selection": {
         "title_path": "webTitle",
         "url_path": "webUrl",
         "summary_path": "fields.trailText",
         "section_path": "sectionName",
         "published_at_path": "webPublicationDate",
-        "max_candidates": 50
+        "max_candidates": 50,
+        "require_subject_match": true
       }
         }
       },

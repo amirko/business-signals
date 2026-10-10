@@ -6,6 +6,7 @@ from business_signals.llm import ExternalResearchPlan, ExternalResearchPlans, Ex
 from business_signals.models import (
     ExternalFinding,
     ExternalResearchCandidate,
+    ExternalResearchCandidateRanking,
     HypothesisStatus,
     InvestigationState,
     InvestigationStep,
@@ -189,6 +190,91 @@ async def test_external_research_omits_provider_candidates_that_do_not_bear_on_t
     assert completed["observations"] == []
     assert completed["external_research_checks"][0].status == "completed"
     assert emitted == ["ExternalResearchStarted", "ExternalResearchNoRelevantResult"]
+
+
+class MajorNewsFixture:
+    def available_agents(self) -> list[dict[str, object]]:
+        return [{"id": "guardian-news", "name": "Historic news", "evidence_topics": ["public.events"]}]
+
+    async def research(
+        self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str
+    ) -> ExternalFinding:
+        return ExternalFinding(
+            type="guardian-news",
+            period=f"{start_date} to {end_date}",
+            observation="First returned article",
+            relationship="correlated",
+            confidence=0.68,
+            source_url="https://www.theguardian.com/world/example",
+            source_title="The Guardian: World",
+            candidate_subject_match_required=True,
+            candidates=[
+                ExternalResearchCandidate(
+                    title="Iran war delays European wind projects",
+                    url="https://www.theguardian.com/business/eu-wind",
+                    summary="Supply-chain effects in Europe.",
+                ),
+                ExternalResearchCandidate(
+                    title="Dubai stores and malls see fewer visitors during regional conflict",
+                    url="https://www.theguardian.com/world/dubai-conflict",
+                    summary="Travel and security concerns reduced activity in Dubai.",
+                ),
+            ],
+        )
+
+
+class MajorNewsRankingLLM:
+    async def structured(self, response_model, _instruction: str, payload: dict[str, object]):
+        assert response_model is ExternalResearchRelevance
+        # The Europe-only article was removed before model ranking.
+        assert len(payload["provider_candidates"]) == 1
+        return ExternalResearchRelevance(
+            candidate_index=0,
+            relevance="relevant",
+            significance="major",
+            rankings=[ExternalResearchCandidateRanking(
+                candidate_index=0,
+                significance="major",
+                rationale="It identifies a Dubai conflict impact on travel and visitor activity.",
+            )],
+            confidence=0.91,
+            rationale="This is a major, location-specific disruption consistent with lower foot traffic.",
+        )
+
+
+@pytest.mark.asyncio
+async def test_news_ranking_rejects_nonlocal_articles_and_keeps_a_major_local_event() -> None:
+    async def emit(_state: InvestigationState, _event_type: str, _message: str, **_data: object) -> None:
+        return None
+
+    coordinator = ExternalResearchCoordinator(
+        researcher=MajorNewsFixture(),  # type: ignore[arg-type]
+        llm=MajorNewsRankingLLM(),  # type: ignore[arg-type]
+        emit=emit,
+        state_payload=lambda _state: {},
+        resolve_hypothesis_name=lambda _name, _state: "hyp_events",
+    )
+    state = InvestigationState(
+        investigation_id="inv_major_news",
+        question="Why did Dubai sales fall?",
+        datasources=[],
+        hypotheses=[{
+            "id": "hyp_events", "name": "Local disruption", "description": "A disruption reduced visits.",
+            "category": "external", "research_scope": "external", "confidence": 0.3,
+        }],
+        external_request={
+            "agent_id": "guardian-news", "hypothesis_id": "hyp_events", "subject": "Dubai, United Arab Emirates",
+            "start_date": "2026-03-01", "end_date": "2026-03-31", "rationale": "Check local disruptions.",
+        },
+    )
+
+    completed = await coordinator.execute(state)
+
+    finding = completed["external_findings"][0]
+    assert finding.significance == "major"
+    assert finding.confidence == 0.68  # Provider reliability is separate from event significance.
+    assert finding.candidates[0].title.startswith("Dubai stores")
+    assert finding.candidate_rankings[0].significance == "major"
 
 
 class ParallelResearchFixture:

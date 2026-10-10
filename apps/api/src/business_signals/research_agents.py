@@ -125,6 +125,7 @@ class RelevanceSelection(BaseModel):
     section_path: JsonPath | None = None
     published_at_path: JsonPath | None = None
     max_candidates: int = Field(default=20, ge=1, le=50)
+    require_subject_match: bool = False
 
 
 class JsonResponse(BaseModel):

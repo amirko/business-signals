@@ -246,6 +246,11 @@ class ExternalFinding(BaseModel):
     source_reliability: float | None = Field(default=None, ge=0, le=1)
     source_url: str
     source_title: str
+    # A configured document search can require a literal match to its subject
+    # before the language model ranks the provider's results.
+    candidate_subject_match_required: bool = False
+    significance: Literal["major", "minor", "none"] = "none"
+    candidate_rankings: list["ExternalResearchCandidateRanking"] = Field(default_factory=list, max_length=50)
     measurements: list["ExternalMeasurement"] = Field(default_factory=list)
     coverage_method: str | None = None
     point_count: int | None = Field(default=None, ge=1)
@@ -263,6 +268,14 @@ class ExternalResearchCandidate(BaseModel):
     summary: str | None = Field(default=None, max_length=4_000)
     section: str | None = Field(default=None, max_length=200)
     published_at: str | None = Field(default=None, max_length=100)
+
+
+class ExternalResearchCandidateRanking(BaseModel):
+    """A grounded significance ranking for one provider-returned document."""
+
+    candidate_index: int = Field(ge=0, le=49)
+    significance: Literal["major", "minor", "none"]
+    rationale: str = Field(min_length=1, max_length=500)
 
 
 class ExternalResearchCheck(BaseModel):

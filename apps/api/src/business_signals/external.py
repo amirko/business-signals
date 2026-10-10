@@ -334,6 +334,10 @@ class ExternalResearcher:
             source_reliability=runner.response.source_reliability,
             source_url=source_url,
             source_title=source_title,
+            candidate_subject_match_required=bool(
+                runner.response.relevance_selection
+                and runner.response.relevance_selection.require_subject_match
+            ),
             candidates=candidates,
         )
         logger.info(

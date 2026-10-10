@@ -181,6 +181,33 @@ class ExternalResearchCoordinator:
         hypothesis = next((item for item in state.hypotheses if item.id == request["hypothesis_id"]), None)
         if hypothesis is None:
             raise RuntimeError("External research request has no matching hypothesis")
+        candidates = finding.candidates
+        if finding.candidate_subject_match_required:
+            # A document-search connector can opt into this deterministic
+            # guard. It is deliberately based on its configured subject, not
+            # an agent name: a result must name at least one supplied place
+            # component before the model is allowed to assess its impact.
+            subject_terms = [
+                term.strip().casefold()
+                for term in str(request["subject"]).split(",")
+                if len(term.strip()) >= 3
+            ]
+            candidates = [
+                candidate
+                for candidate in candidates
+                if any(
+                    term in f"{candidate.title} {candidate.summary or ''}".casefold()
+                    for term in subject_terms
+                )
+            ]
+            if not candidates:
+                logger.info(
+                    "External research had no candidates matching the configured subject: investigation=%s agent=%s subject=%r",
+                    state.investigation_id,
+                    request["agent_id"],
+                    request["subject"],
+                )
+                return None
         result = await self.llm.structured(
             ExternalResearchRelevance,
             prompts.load("external_research_relevance"),
@@ -188,7 +215,7 @@ class ExternalResearchCoordinator:
                 "question": state.current_conversation_question or state.question,
                 "hypothesis": hypothesis.model_dump(mode="json"),
                 "request": request,
-                "provider_candidates": [candidate.model_dump(mode="json") for candidate in finding.candidates],
+                "provider_candidates": [candidate.model_dump(mode="json") for candidate in candidates],
             },
         )
         if result.relevance == "none":
@@ -196,13 +223,22 @@ class ExternalResearchCoordinator:
                 "External research returned no relevant candidate: investigation=%s agent=%s candidates=%d rationale=%s",
                 state.investigation_id,
                 request["agent_id"],
-                len(finding.candidates),
+                len(candidates),
                 result.rationale,
             )
             return None
-        if result.candidate_index is None or result.candidate_index >= len(finding.candidates):
+        if result.candidate_index is None or result.candidate_index >= len(candidates):
             raise ValueError("External relevance selection did not identify a returned candidate")
-        candidate = finding.candidates[result.candidate_index]
+        if result.significance != "major":
+            logger.info(
+                "External research selected no major candidate: investigation=%s agent=%s significance=%s rationale=%s",
+                state.investigation_id,
+                request["agent_id"],
+                result.significance,
+                result.rationale,
+            )
+            return None
+        candidate = candidates[result.candidate_index]
         observation = candidate.title
         if candidate.summary:
             observation = f"{observation} — {candidate.summary}"
@@ -216,6 +252,8 @@ class ExternalResearchCoordinator:
                     if candidate.section and candidate.section != finding.source_title.removeprefix("The Guardian: ")
                     else finding.source_title
                 ),
+                "significance": result.significance,
+                "candidate_rankings": result.rankings,
                 # The complete provider response remains in the backend log.
                 # Only the selected document can enter the evidence or
                 # synthesis payload, preventing a later model step from
