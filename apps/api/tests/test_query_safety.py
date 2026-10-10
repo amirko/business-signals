@@ -139,9 +139,7 @@ def test_research_agent_catalog_loads_builtins_and_keeps_secrets_out_of_json() -
 
     assert [agent.id for agent in catalog.list()] == [
         "weather",
-        "economy-fx",
         "guardian-news",
-        "fred-macro",
     ]
     assert "gdeltproject" not in Path("config/research-agents.json").read_text(encoding="utf-8")
     runner = catalog.get("weather").runner
@@ -161,12 +159,9 @@ def test_research_agent_catalog_loads_builtins_and_keeps_secrets_out_of_json() -
 def test_research_agent_requires_its_secret_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("FRED_API_KEY", raising=False)
     monkeypatch.delenv("GUARDIAN_API_KEY", raising=False)
     catalog = ResearchAgentCatalog.load(Path("config/research-agents.json"))
 
-    with pytest.raises(ValueError, match="FRED_API_KEY"):
-        catalog.get("fred-macro")
     with pytest.raises(ValueError, match="GUARDIAN_API_KEY"):
         catalog.get("guardian-news")
 

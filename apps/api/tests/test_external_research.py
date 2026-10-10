@@ -410,7 +410,7 @@ async def test_external_research_runs_one_check_per_selection_so_each_result_can
 
 
 def test_external_agents_are_selected_by_semantic_evidence_topics() -> None:
-    """A weather mechanism cannot accidentally invoke the FX connector."""
+    """A weather mechanism selects only the matching configured connector."""
     coordinator = ExternalResearchCoordinator(
         researcher=type(
             "Researcher",
@@ -418,7 +418,6 @@ def test_external_agents_are_selected_by_semantic_evidence_topics() -> None:
             {
                 "available_agents": lambda _self: [
                     {"id": "weather", "name": "Weather", "evidence_topics": ["weather.conditions"]},
-                    {"id": "economy-fx", "name": "FX", "evidence_topics": ["currency.exchange"]},
                 ]
             },
         )(),  # type: ignore[arg-type]
@@ -441,22 +440,12 @@ def test_external_agents_are_selected_by_semantic_evidence_topics() -> None:
                 "evidence_topics": ["weather.conditions"],
                 "confidence": 0.3,
             },
-            {
-                "id": "currency_cause",
-                "name": "Currency movement",
-                "description": "A rate movement affected demand.",
-                "category": "external",
-                "research_scope": "external",
-                "evidence_topics": ["currency.exchange"],
-                "confidence": 0.3,
-            },
         ],
     )
 
     eligible = coordinator.eligible_agents_by_hypothesis(state)
 
     assert [agent["id"] for agent in eligible["weather_cause"]] == ["weather"]
-    assert [agent["id"] for agent in eligible["currency_cause"]] == ["economy-fx"]
 
 
 @pytest.mark.asyncio

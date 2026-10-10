@@ -130,16 +130,15 @@ MAX_POINTS_WEATHER_API=150
 Each research finding records its actual sampling method and point count. A store-based business
 investigation should use the relevant store coordinates rather than a regional grid.
 
-The database initialization scripts create schema and load the checked-in CSV fixtures under `examples/data/`. Those files hold internal business records only; weather, FX, and historic-event data remains an external-research concern.
+The database initialization scripts create schema and load the checked-in CSV fixtures under `examples/data/`. Those files hold internal business records only; weather and historic-event data remains an external-research concern.
 
 ### Optional research-agent credentials
 
 Research agents are defined in `config/research-agents.json`, but their keys are never written
-there. To enable the FRED United States macroeconomic-data agent and the Guardian historic-news
-agent, add your personal keys to the untracked `.env` file and restart the API:
+there. To enable the Guardian historic-news agent, add your personal key to the untracked `.env`
+file and restart the API:
 
 ```bash
-FRED_API_KEY=your-key
 GUARDIAN_API_KEY=your-key
 ```
 

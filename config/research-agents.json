@@ -142,75 +142,6 @@
       "source_url": "https://open-meteo.com/"
     },
     {
-      "id": "economy-fx",
-      "name": "Historical foreign exchange",
-      "enabled": true,
-      "purpose": "Check whether a currency movement could have affected costs, prices, margins, or demand.",
-      "subjects": ["exchange rates", "foreign exchange", "currency", "FX"],
-      "evidence_topics": ["currency.exchange"],
-      "runner": {
-        "kind": "http_json",
-        "input": {
-          "subject_label": "currency pair",
-          "subject_pattern": "^[A-Za-z]{3}/[A-Za-z]{3}$"
-        },
-        "input_transforms": [
-          {
-            "name": "base",
-            "operation": "split",
-            "source": "subject",
-            "separator": "/",
-            "index": 0,
-            "uppercase": true
-          },
-          {
-            "name": "quote",
-            "operation": "split",
-            "source": "subject",
-            "separator": "/",
-            "index": 1,
-            "uppercase": true
-          }
-        ],
-        "steps": [
-          {
-            "name": "rates",
-            "url": "https://api.frankfurter.app/{start_date}..{end_date}",
-            "query": {
-              "from": "{base}",
-              "to": "{quote}"
-            }
-          }
-        ],
-        "response": {
-          "computed": [
-            {
-              "name": "starting_rate",
-              "operation": "first",
-              "path": "rates.*.{quote}",
-              "precision": 6
-            },
-            {
-              "name": "ending_rate",
-              "operation": "last",
-              "path": "rates.*.{quote}",
-              "precision": 6
-            },
-            {
-              "name": "change_percent",
-              "operation": "percent_change",
-              "from_field": "starting_rate",
-              "to_field": "ending_rate",
-              "precision": 2
-            }
-          ],
-          "observation_template": "{base}/{quote} moved {change_percent}% across the requested period.",
-          "source_reliability": 0.82
-        }
-      },
-      "source_url": "https://frankfurter.dev/"
-    },
-    {
       "id": "guardian-news",
       "name": "Historic news and events (Guardian)",
       "enabled": true,
@@ -261,63 +192,6 @@
         }
       },
       "source_url": "https://open-platform.theguardian.com/"
-    },
-    {
-      "id": "fred-macro",
-      "name": "US economic data (FRED)",
-      "enabled": true,
-      "purpose": "Find a relevant United States economic series and retrieve its latest recorded value for the requested period.",
-      "subjects": ["inflation", "unemployment", "interest rates", "GDP", "United States economic data"],
-      "evidence_topics": ["macroeconomy.conditions"],
-      "runner": {
-        "kind": "http_json",
-        "authentication": {
-          "type": "api_key",
-          "environment": "FRED_API_KEY",
-          "location": "query",
-          "name": "api_key"
-        },
-        "input": {
-          "subject_label": "United States economic topic",
-          "subject_pattern": "^[^\\r\\n\\x00]{2,160}$"
-        },
-        "steps": [
-          {
-            "name": "find_series",
-            "url": "https://api.stlouisfed.org/fred/series/search",
-            "query": {
-              "search_text": "{subject}",
-              "file_type": "json",
-              "limit": "1"
-            },
-            "extract": {
-              "series_id": "seriess.0.id",
-              "series_title": "seriess.0.title",
-              "series_units": "seriess.0.units"
-            }
-          },
-          {
-            "name": "observations",
-            "url": "https://api.stlouisfed.org/fred/series/observations",
-            "query": {
-              "series_id": "{series_id}",
-              "observation_start": "{start_date}",
-              "observation_end": "{end_date}",
-              "sort_order": "asc",
-              "file_type": "json"
-            }
-          }
-        ],
-        "response": {
-          "items_path": "observations",
-          "item": "last",
-          "observation_template": "{series_title}: the latest recorded value in this period was {value} on {date} ({series_units}).",
-          "no_result_observation_template": "FRED found the {series_title} series, but it has no observations in the requested period.",
-          "source_title_template": "FRED: {series_title}",
-          "source_reliability": 0.84
-        }
-      },
-      "source_url": "https://fred.stlouisfed.org/"
     }
   ]
 }

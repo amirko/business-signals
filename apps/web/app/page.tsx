@@ -232,7 +232,7 @@ const investigationStepLabels: Record<string, string> = {
 };
 
 const defaultQuestion =
-  'Why did unit sales of Shell Jacket 001, Trail Backpack 006, Day Pack 011, and Rain Cover 016 in northern Italian stores fall after July 14, 2024?';
+  'What caused outdoor product sales to fall in Milan in July 2024?';
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
