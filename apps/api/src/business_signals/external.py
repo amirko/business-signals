@@ -13,6 +13,12 @@ from typing import Any
 import httpx
 
 from business_signals.config import settings
+from business_signals.geography import (
+    GeographicScope,
+    GeoPoint,
+    sample_boundary,
+    select_geocoding_candidate,
+)
 from business_signals.models import ExternalFinding, ExternalMeasurement, ExternalResearchCandidate
 from business_signals.research_agents import (
     ApiKeyAuthentication,
@@ -22,17 +28,16 @@ from business_signals.research_agents import (
     HttpStep,
     PipelineHttpStep,
     PipelineRunner,
+    ResearchAgent,
+    ResearchAgentCatalog,
+    ResearchAgentUnavailable,
     SampleBoundaryStep,
     SelectGeographicLocationsStep,
     SplitStringsStep,
     SummarizeDailySeriesStep,
-    ResearchAgent,
-    ResearchAgentCatalog,
-    ResearchAgentUnavailable,
     json_values,
     render_template,
 )
-from business_signals.geography import GeographicScope, GeoPoint, sample_boundary, select_geocoding_candidate
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -67,8 +72,7 @@ class ExternalResearcher:
                             "multiple_location_delimiter": ";",
                             "city_requirement": "Include country, and region when known, for an ambiguous city name.",
                         }
-                        if isinstance(agent.runner, PipelineRunner)
-                        and "geographic_scope" in agent.runner.capabilities
+                        if isinstance(agent.runner, PipelineRunner) and "geographic_scope" in agent.runner.capabilities
                         else None
                     ),
                 }
@@ -82,10 +86,7 @@ class ExternalResearcher:
 
         def redact(value: Any) -> Any:
             if isinstance(value, dict):
-                return {
-                    key: "[redacted]" if key.casefold() in sensitive_names else redact(item)
-                    for key, item in value.items()
-                }
+                return {key: "[redacted]" if key.casefold() in sensitive_names else redact(item) for key, item in value.items()}
             if isinstance(value, list):
                 return [redact(item) for item in value]
             return value
@@ -94,7 +95,12 @@ class ExternalResearcher:
         return encoded if len(encoded) <= limit else f"{encoded[:limit]}… [truncated]"
 
     def validate_request(
-        self, category: str, subject: str, start_date: str, end_date: str, comparison_start_date: str | None = None
+        self,
+        category: str,
+        subject: str,
+        start_date: str,
+        end_date: str,
+        comparison_start_date: str | None = None,
     ) -> tuple[ResearchAgent, str]:
         """Validate a planned agent call before it is allowed to reach a provider."""
         agent = self.catalog.get(category)
@@ -106,9 +112,7 @@ class ExternalResearcher:
                 raise ValueError("External research comparison date must use YYYY-MM-DD") from exc
             if not start < boundary <= end:
                 raise ValueError("External research comparison date must be within the requested period")
-        validated_subject = self._validated_subject(
-            subject, agent.runner.input.subject_label, agent.runner.input.subject_pattern
-        )
+        validated_subject = self._validated_subject(subject, agent.runner.input.subject_label, agent.runner.input.subject_pattern)
         self._input_values(agent, validated_subject, start_date, end_date, "")
         return agent, validated_subject
 
@@ -125,9 +129,7 @@ class ExternalResearcher:
         return start, end
 
     @staticmethod
-    def _validated_subject(
-        subject: str, label: str, pattern: str = r"^[^\r\n\x00]{1,160}$"
-    ) -> str:
+    def _validated_subject(subject: str, label: str, pattern: str = r"^[^\r\n\x00]{1,160}$") -> str:
         value = subject.strip()
         if not value or len(value) > 160 or any(character in value for character in "\r\n\x00"):
             raise ValueError(f"External research {label} must be between 1 and 160 ordinary characters")
@@ -205,7 +207,7 @@ class ExternalResearcher:
         if selection is None:
             return []
         candidates: list[ExternalResearchCandidate] = []
-        for item in rows[:selection.max_candidates]:
+        for item in rows[: selection.max_candidates]:
             title = cls._first_text_at_path(item, selection.title_path)
             url = cls._first_text_at_path(item, selection.url_path)
             if not title or not url:
@@ -245,9 +247,7 @@ class ExternalResearcher:
                 if isinstance(runner.authentication, ApiKeyAuthentication):
                     destination = headers if runner.authentication.location == "header" else params
                     destination[runner.authentication.name] = f"{runner.authentication.prefix}{os.environ[runner.authentication.environment]}"
-                body = (
-                    {key: render_template(value, values) for key, value in step.json_body.items()} if step.json_body else None
-                )
+                body = {key: render_template(value, values) for key, value in step.json_body.items()} if step.json_body else None
                 request_url = str(httpx.URL(render_template(step.url, values), params=params))
                 safe_request_url = self._safe_source_url(request_url, runner.authentication)
                 logger.info(
@@ -321,7 +321,8 @@ class ExternalResearcher:
             source_title = render_template(runner.response.source_title_template, values)
         else:
             observation = render_template(
-                runner.response.no_result_observation_template or "No matching records were returned by {agent_name}", values
+                runner.response.no_result_observation_template or "No matching records were returned by {agent_name}",
+                values,
             )
             source_url, source_title = last_url, agent.name
         candidates = self._research_candidates(rows, runner)
@@ -334,10 +335,7 @@ class ExternalResearcher:
             source_reliability=runner.response.source_reliability,
             source_url=source_url,
             source_title=source_title,
-            candidate_subject_match_required=bool(
-                runner.response.relevance_selection
-                and runner.response.relevance_selection.require_subject_match
-            ),
+            candidate_subject_match_required=bool(runner.response.relevance_selection and runner.response.relevance_selection.require_subject_match),
             candidates=candidates,
         )
         logger.info(
@@ -366,26 +364,52 @@ class ExternalResearcher:
         body = {key: render_template(value, values) for key, value in step.json_body.items()} if step.json_body else None
         request_url = str(httpx.URL(render_template(step.url, values), params=params))
         safe_request_url = self._safe_source_url(request_url, runner.authentication)
-        logger.info("External agent HTTP request: agent=%s step=%s method=%s url=%s", agent.id, step.name, step.method, safe_request_url)
+        logger.info(
+            "External agent HTTP request: agent=%s step=%s method=%s url=%s",
+            agent.id,
+            step.name,
+            step.method,
+            safe_request_url,
+        )
         started_at = perf_counter()
         try:
-            response = await client.request(step.method, render_template(step.url, values), params=params, headers=headers, json=body)
+            response = await client.request(
+                step.method,
+                render_template(step.url, values),
+                params=params,
+                headers=headers,
+                json=body,
+            )
             response.raise_for_status()
         except Exception as exc:
             failed_response = getattr(exc, "response", None)
             status_code = getattr(failed_response, "status_code", "unavailable")
             logger.warning(
                 "External agent HTTP request failed: agent=%s step=%s method=%s url=%s status=%s duration_ms=%.1f error=%s",
-                agent.id, step.name, step.method, safe_request_url, status_code, (perf_counter() - started_at) * 1000, exc,
+                agent.id,
+                step.name,
+                step.method,
+                safe_request_url,
+                status_code,
+                (perf_counter() - started_at) * 1000,
+                exc,
             )
             raise
         logger.info(
             "External agent HTTP response: agent=%s step=%s status=%s duration_ms=%.1f content_length=%s",
-            agent.id, step.name, response.status_code, (perf_counter() - started_at) * 1000,
+            agent.id,
+            step.name,
+            response.status_code,
+            (perf_counter() - started_at) * 1000,
             response.headers.get("content-length", "unknown"),
         )
         payload = response.json()
-        logger.info("External agent JSON response: agent=%s step=%s payload=%s", agent.id, step.name, self._safe_response_preview(payload))
+        logger.info(
+            "External agent JSON response: agent=%s step=%s payload=%s",
+            agent.id,
+            step.name,
+            self._safe_response_preview(payload),
+        )
         return payload, self._safe_source_url(str(response.url), runner.authentication)
 
     @staticmethod
@@ -398,11 +422,7 @@ class ExternalResearcher:
     def _daily_records(payload: Any, daily_path: str) -> list[dict[str, Any]]:
         """Accept one Open-Meteo result or its documented multi-location list shape."""
         payloads = payload if isinstance(payload, list) else [payload]
-        return [
-            selected[0]
-            for item in payloads
-            if (selected := json_values(item, daily_path)) and isinstance(selected[0], dict)
-        ]
+        return [selected[0] for item in payloads if (selected := json_values(item, daily_path)) and isinstance(selected[0], dict)]
 
     @staticmethod
     def _summarize_daily_series(
@@ -432,9 +452,7 @@ class ExternalResearcher:
             "coverage_method": scope.coverage_method,
             "minimum_value": round(min(minimums), 1),
             "maximum_value": round(max(maximums), 1),
-            "average_precipitation": round(
-                sum(precipitation_totals) / len(precipitation_totals), 1
-            ) if precipitation_totals else 0.0,
+            "average_precipitation": round(sum(precipitation_totals) / len(precipitation_totals), 1) if precipitation_totals else 0.0,
         }
         if not comparison_start_date or not comparison_metrics:
             return result
@@ -482,9 +500,7 @@ class ExternalResearcher:
         return result
 
     @staticmethod
-    def _bound_values(
-        context: dict[str, Any], item: Any, bindings: dict[str, str]
-    ) -> dict[str, Any]:
+    def _bound_values(context: dict[str, Any], item: Any, bindings: dict[str, str]) -> dict[str, Any]:
         values = dict(context)
         for name, path in bindings.items():
             if path == "":
@@ -497,9 +513,7 @@ class ExternalResearcher:
         return values
 
     @staticmethod
-    def _select_geographic_scope(
-        locations: list[str], responses: list[Any], candidates_path: str
-    ) -> tuple[GeographicScope, bool, str | None]:
+    def _select_geographic_scope(locations: list[str], responses: list[Any], candidates_path: str) -> tuple[GeographicScope, bool, str | None]:
         if len(locations) != len(responses):
             raise ValueError("Geographic selection needs exactly one geocoder response per location")
         points: list[GeoPoint] = []
@@ -560,7 +574,10 @@ class ExternalResearcher:
                     payloads = []
                     for item in items:
                         payload, last_url = await self._request_json(
-                            client, agent, step.request, self._bound_values(values, item, step.bindings)
+                            client,
+                            agent,
+                            step.request,
+                            self._bound_values(values, item, step.bindings),
                         )
                         payloads.append(payload)
                     values[step.target] = payloads if step.for_each else payloads[0]
@@ -597,10 +614,7 @@ class ExternalResearcher:
                         raise ValueError(f"Pipeline step {step.id} needs a geographic scope")
                     maximum = getattr(settings, step.max_items_setting, None)
                     if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 1:
-                        raise ValueError(
-                            f"Pipeline step {step.id} references an invalid batch-limit setting "
-                            f"{step.max_items_setting!r}"
-                        )
+                        raise ValueError(f"Pipeline step {step.id} references an invalid batch-limit setting {step.max_items_setting!r}")
                     values[step.target] = [
                         {
                             "latitudes": ",".join(f"{point.latitude:.6f}" for point in scope.points[offset : offset + maximum]),
@@ -614,24 +628,31 @@ class ExternalResearcher:
                     if not isinstance(scope, GeographicScope) or not isinstance(payloads, list):
                         raise ValueError(f"Pipeline step {step.id} needs geographic scope and response list")
                     daily_records = [record for payload in payloads for record in self._daily_records(payload, step.daily_path)]
-                    values.update(self._summarize_daily_series(
-                        scope,
-                        daily_records,
-                        step.minimum_field,
-                        step.maximum_field,
-                        step.precipitation_field,
-                        step.comparison_metrics,
-                        str(values.get(step.comparison_start_value, "")) or None if step.comparison_start_value else None,
-                        start_date,
-                        end_date,
-                    ))
+                    values.update(
+                        self._summarize_daily_series(
+                            scope,
+                            daily_records,
+                            step.minimum_field,
+                            step.maximum_field,
+                            step.precipitation_field,
+                            step.comparison_metrics,
+                            str(values.get(step.comparison_start_value, "")) or None if step.comparison_start_value else None,
+                            start_date,
+                            end_date,
+                        )
+                    )
                 else:  # pragma: no cover - Pydantic's discriminated union makes this unreachable.
                     raise ValueError(f"Unsupported pipeline step: {step.type}")
         scope = values.get("geographic_scope")
         if isinstance(scope, GeographicScope):
             logger.info(
                 "Geographic pipeline scope resolved: agent=%s kind=%s label=%r points=%d coverage=%s area_km2=%s",
-                agent.id, scope.kind, scope.label, len(scope.points), scope.coverage_method, scope.area_km2,
+                agent.id,
+                scope.kind,
+                scope.label,
+                len(scope.points),
+                scope.coverage_method,
+                scope.area_km2,
             )
         observation = render_template(runner.output.observation_template, values)
         finding = ExternalFinding(
@@ -650,6 +671,8 @@ class ExternalResearcher:
         )
         logger.info(
             "Pipeline agent finding: agent=%s observation=%r source_url=%s",
-            agent.id, finding.observation, finding.source_url,
+            agent.id,
+            finding.observation,
+            finding.source_url,
         )
         return finding

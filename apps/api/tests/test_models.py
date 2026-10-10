@@ -17,7 +17,12 @@ def test_confidence_is_bounded() -> None:
 
 
 def test_hypotheses_get_stable_prefixes() -> None:
-    hypothesis = Hypothesis(name="Inventory constraint", description="Inventory constrained sales", category="inventory", confidence=0.3)
+    hypothesis = Hypothesis(
+        name="Inventory constraint",
+        description="Inventory constrained sales",
+        category="inventory",
+        confidence=0.3,
+    )
     assert hypothesis.id.startswith("hyp_")
 
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import statistics
 from collections import Counter, defaultdict
-from typing import Any, Hashable, Iterable, Sequence
+from collections.abc import Hashable, Iterable, Sequence
+from typing import Any
 
 
 def percentage_change(previous: float, current: float) -> float | None:
@@ -26,10 +27,7 @@ def cohort_comparison(values: Iterable[tuple[Hashable, float]]) -> dict[Hashable
     groups: dict[Hashable, list[float]] = defaultdict(list)
     for cohort, value in values:
         groups[cohort].append(float(value))
-    return {
-        cohort: {"count": float(len(items)), "mean": statistics.fmean(items), "total": sum(items)}
-        for cohort, items in groups.items()
-    }
+    return {cohort: {"count": float(len(items)), "mean": statistics.fmean(items), "total": sum(items)} for cohort, items in groups.items()}
 
 
 def segmentation(rows: Iterable[dict[str, Any]], dimension: str, metric: str) -> list[dict[str, Any]]:
@@ -38,7 +36,15 @@ def segmentation(rows: Iterable[dict[str, Any]], dimension: str, metric: str) ->
         if row.get(metric) is not None:
             groups[row.get(dimension)].append(float(row[metric]))
     return sorted(
-        ({"segment": key, "count": len(values), "total": sum(values), "mean": statistics.fmean(values)} for key, values in groups.items()),
+        (
+            {
+                "segment": key,
+                "count": len(values),
+                "total": sum(values),
+                "mean": statistics.fmean(values),
+            }
+            for key, values in groups.items()
+        ),
         key=lambda item: item["total"],
         reverse=True,
     )
@@ -114,7 +120,11 @@ def before_after(values_before: Sequence[float], values_after: Sequence[float]) 
     if not values_before or not values_after:
         raise ValueError("Before and after windows must not be empty")
     before, after = statistics.fmean(values_before), statistics.fmean(values_after)
-    return {"before_mean": before, "after_mean": after, "percentage_change": percentage_change(before, after)}
+    return {
+        "before_mean": before,
+        "after_mean": after,
+        "percentage_change": percentage_change(before, after),
+    }
 
 
 def summarize_query_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:

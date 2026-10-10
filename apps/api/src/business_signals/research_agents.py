@@ -73,12 +73,10 @@ class HttpStep(BaseModel):
     query: dict[str, TemplateValue] = Field(default_factory=dict)
     headers: dict[str, TemplateValue] = Field(default_factory=dict)
     json_body: dict[str, TemplateValue] | None = None
-    extract: dict[Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")], JsonPath] = Field(
-        default_factory=dict
-    )
+    extract: dict[Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")], JsonPath] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_url_and_credentials(self) -> "HttpStep":
+    def validate_url_and_credentials(self) -> HttpStep:
         raw_url = urlparse(self.url)
         placeholder_url = re.sub(r"\{[A-Za-z_][A-Za-z0-9_]*\}", "value", self.url)
         parsed = urlparse(placeholder_url)
@@ -107,7 +105,7 @@ class ComputedValue(BaseModel):
     precision: int | None = Field(default=None, ge=0, le=8)
 
     @model_validator(mode="after")
-    def validate_operation_inputs(self) -> "ComputedValue":
+    def validate_operation_inputs(self) -> ComputedValue:
         if self.operation == "percent_change":
             if not self.from_field or not self.to_field:
                 raise ValueError("percent_change requires from_field and to_field")
@@ -159,7 +157,7 @@ class HttpJsonRunner(BaseModel):
     response: JsonResponse
 
     @model_validator(mode="after")
-    def unique_workflow_names(self) -> "HttpJsonRunner":
+    def unique_workflow_names(self) -> HttpJsonRunner:
         names = [step.name for step in self.steps]
         names.extend(transform.name for transform in self.input_transforms)
         if len(names) != len(set(names)):
@@ -185,9 +183,7 @@ class PipelineHttpStep(BaseModel):
     request: HttpStep
     target: Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
     for_each: Annotated[str | None, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] = None
-    bindings: dict[Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")], JsonPath] = Field(
-        default_factory=dict
-    )
+    bindings: dict[Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")], JsonPath] = Field(default_factory=dict)
     when: Literal["always", "administrative_scope"] = "always"
 
 
@@ -233,7 +229,7 @@ class SummarizeDailySeriesStep(BaseModel):
     maximum_field: Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
     precipitation_field: Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
     comparison_start_value: Annotated[str | None, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")] = None
-    comparison_metrics: list["DailyComparisonMetric"] = Field(default_factory=list, max_length=12)
+    comparison_metrics: list[DailyComparisonMetric] = Field(default_factory=list, max_length=12)
 
 
 class DailyComparisonMetric(BaseModel):
@@ -248,12 +244,7 @@ class DailyComparisonMetric(BaseModel):
 
 
 PipelineStep = Annotated[
-    SplitStringsStep
-    | PipelineHttpStep
-    | SelectGeographicLocationsStep
-    | SampleBoundaryStep
-    | BatchCoordinatesStep
-    | SummarizeDailySeriesStep,
+    SplitStringsStep | PipelineHttpStep | SelectGeographicLocationsStep | SampleBoundaryStep | BatchCoordinatesStep | SummarizeDailySeriesStep,
     Field(discriminator="type"),
 ]
 
@@ -281,14 +272,12 @@ class PipelineRunner(BaseModel):
     authentication: Authentication = NoAuthentication()
     input: AgentInput = Field(default_factory=AgentInput)
     input_transforms: list[InputTransform] = Field(default_factory=list, max_length=10)
-    capabilities: list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{1,62}$")]] = Field(
-        default_factory=list, max_length=20
-    )
+    capabilities: list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{1,62}$")]] = Field(default_factory=list, max_length=20)
     steps: list[PipelineStep] = Field(min_length=1, max_length=30)
     output: PipelineOutput
 
     @model_validator(mode="after")
-    def unique_step_ids(self) -> "PipelineRunner":
+    def unique_step_ids(self) -> PipelineRunner:
         ids = [step.id for step in self.steps]
         if len(ids) != len(set(ids)):
             raise ValueError("Pipeline step IDs must be unique")
@@ -320,7 +309,7 @@ class ResearchAgentCatalogModel(BaseModel):
     agents: list[ResearchAgent] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
-    def unique_agent_ids(self) -> "ResearchAgentCatalogModel":
+    def unique_agent_ids(self) -> ResearchAgentCatalogModel:
         ids = [agent.id for agent in self.agents]
         if len(ids) != len(set(ids)):
             raise ValueError("Research-agent IDs must be unique")
@@ -337,7 +326,7 @@ class ResearchAgentCatalog:
         self._by_id = {agent.id: agent for agent in catalog.agents}
 
     @classmethod
-    def load(cls, path: Path) -> "ResearchAgentCatalog":
+    def load(cls, path: Path) -> ResearchAgentCatalog:
         try:
             payload: Any = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -358,9 +347,7 @@ class ResearchAgentCatalog:
             raise ResearchAgentUnavailable(f"Research agent is disabled: {agent_id}")
         authentication = agent.runner.authentication
         if isinstance(authentication, ApiKeyAuthentication) and not os.getenv(authentication.environment):
-            raise ResearchAgentUnavailable(
-                f"Research agent requires {authentication.environment} to be configured"
-            )
+            raise ResearchAgentUnavailable(f"Research agent requires {authentication.environment} to be configured")
         return agent
 
 

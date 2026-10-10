@@ -6,19 +6,31 @@ from typing import Any
 
 import httpx
 import pytest
-
-from business_signals.external import ExternalResearcher
 from business_signals.config import settings
-from business_signals.research_agents import ResearchAgentCatalog, ResearchAgentCatalogModel
+from business_signals.external import ExternalResearcher
 from business_signals.geography import sample_boundary, select_geocoding_candidate
+from business_signals.research_agents import ResearchAgentCatalog, ResearchAgentCatalogModel
 
 
 def test_geocoding_uses_country_context_before_population() -> None:
     point = select_geocoding_candidate(
         "Milan, Italy",
         [
-            {"name": "Milan", "country": "United States", "latitude": 41, "longitude": -91, "population": 9_000},
-            {"name": "Milan", "country": "Italy", "latitude": 45.46427, "longitude": 9.18951, "population": 1_371_498, "timezone": "Europe/Rome"},
+            {
+                "name": "Milan",
+                "country": "United States",
+                "latitude": 41,
+                "longitude": -91,
+                "population": 9_000,
+            },
+            {
+                "name": "Milan",
+                "country": "Italy",
+                "latitude": 45.46427,
+                "longitude": 9.18951,
+                "population": 1_371_498,
+                "timezone": "Europe/Rome",
+            },
         ],
     )
 
@@ -68,7 +80,7 @@ class _Response:
 class _WeatherClient:
     requests: list[tuple[str, dict[str, str]]] = []
 
-    async def __aenter__(self) -> "_WeatherClient":
+    async def __aenter__(self) -> _WeatherClient:
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -115,9 +127,7 @@ async def test_weather_agent_resolves_a_city_then_uses_historical_forecast_coord
     _WeatherClient.requests = []
     monkeypatch.setattr("business_signals.external.httpx.AsyncClient", lambda **_kwargs: _WeatherClient())
 
-    finding = await ExternalResearcher().research(
-        "weather", "Milan, Italy", "2024-07-01", "2024-07-02", "Why did sales fall?"
-    )
+    finding = await ExternalResearcher().research("weather", "Milan, Italy", "2024-07-01", "2024-07-02", "Why did sales fall?")
 
     assert "single_city" in finding.observation
     assert finding.source_title.endswith("single_city, 1 point(s)")
@@ -170,7 +180,14 @@ class _CountryWeatherClient(_WeatherClient):
         if "nominatim" in url:
             return _Response(
                 "https://nominatim.openstreetmap.org/search?q=Exampleland",
-                [{"geojson": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}}],
+                [
+                    {
+                        "geojson": {
+                            "type": "Polygon",
+                            "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+                        }
+                    }
+                ],
             )
         locations = params["latitude"].split(",")
         return _Response(
@@ -198,9 +215,7 @@ async def test_weather_agent_batches_polygon_points_without_reducing_geographic_
     monkeypatch.setattr(settings, "target_cell_area_km2", 2_500)
     monkeypatch.setattr(settings, "max_points_weather_api", 2)
 
-    finding = await ExternalResearcher().research(
-        "weather", "Exampleland", "2024-07-01", "2024-07-01", "Was it rainy?"
-    )
+    finding = await ExternalResearcher().research("weather", "Exampleland", "2024-07-01", "2024-07-01", "Was it rainy?")
 
     forecast_requests = [request for request in _CountryWeatherClient.requests if "historical-forecast" in request[0]]
     assert len(forecast_requests) == 3  # Five polygon points, sent as 2 + 2 + 1.

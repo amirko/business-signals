@@ -89,9 +89,7 @@ def validate_query_tables(sql: str, allowed_tables: set[str]) -> str:
         # were a schema used to let a generated query bypass this guardrail and
         # fail at execution with a misleading cross-database error.
         if table.catalog:
-            raise UnsafeQueryError(
-                "Query must use schema.table names only; datasource IDs cannot appear in SQL"
-            )
+            raise UnsafeQueryError("Query must use schema.table names only; datasource IDs cannot appear in SQL")
         qualified_name = f"{table.db}.{table_name}" if table.db else table_name
         if qualified_name not in allowed_tables and table_name not in allowed_unqualified:
             raise UnsafeQueryError(f"Query references a table outside the selected datasource: {qualified_name}")
@@ -132,9 +130,7 @@ def validate_query_columns(sql: str, table_columns: dict[str, set[str]]) -> str:
             continue
         columns = aliases.get(column.table)
         if columns is not None and column.name not in columns:
-            raise UnsafeQueryError(
-                f"Query references a column outside the discovered schema: {column.table}.{column.name}"
-            )
+            raise UnsafeQueryError(f"Query references a column outside the discovered schema: {column.table}.{column.name}")
     return sql
 
 
@@ -162,19 +158,11 @@ def validate_cross_datasource_lookup_projection(
         raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
 
     if isinstance(statement, exp.Union):
-        raise UnsafeQueryError(
-            "Each cross-datasource lookup must serve one approved relationship; "
-            "do not combine different keys with UNION"
-        )
+        raise UnsafeQueryError("Each cross-datasource lookup must serve one approved relationship; do not combine different keys with UNION")
     if not isinstance(statement, exp.Select) or len(statement.expressions) != 1:
-        raise UnsafeQueryError(
-            "Cross-datasource lookup must return exactly one approved relationship field"
-        )
+        raise UnsafeQueryError("Cross-datasource lookup must return exactly one approved relationship field")
     if statement.expressions[0].alias_or_name != projection_name:
-        raise UnsafeQueryError(
-            "Cross-datasource lookup must return its one approved relationship key "
-            f"as {projection_name!r}"
-        )
+        raise UnsafeQueryError(f"Cross-datasource lookup must return its one approved relationship key as {projection_name!r}")
     if relationship_field is None:
         return
 
@@ -184,9 +172,7 @@ def validate_cross_datasource_lookup_projection(
     if not isinstance(expression, exp.Column) or expression.name != relationship_column:
         raise UnsafeQueryError("Cross-datasource lookup must project the approved relationship field")
     matching_tables = [
-        table
-        for table in statement.find_all(exp.Table)
-        if (f"{table.db}.{table.name}" if table.db else table.name) == relationship_table
+        table for table in statement.find_all(exp.Table) if (f"{table.db}.{table.name}" if table.db else table.name) == relationship_table
     ]
     if not matching_tables:
         raise UnsafeQueryError("Cross-datasource lookup must read the approved relationship table")

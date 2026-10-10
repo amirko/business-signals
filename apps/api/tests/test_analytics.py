@@ -1,5 +1,4 @@
 import pytest
-
 from business_signals.analytics import (
     before_after,
     correlation,

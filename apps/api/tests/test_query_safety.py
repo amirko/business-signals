@@ -137,7 +137,12 @@ def test_weather_agent_rejects_an_explanatory_sentence_as_a_location() -> None:
 def test_research_agent_catalog_loads_builtins_and_keeps_secrets_out_of_json() -> None:
     catalog = ResearchAgentCatalog.load(Path("config/research-agents.json"))
 
-    assert [agent.id for agent in catalog.list()] == ["weather", "economy-fx", "guardian-news", "fred-macro"]
+    assert [agent.id for agent in catalog.list()] == [
+        "weather",
+        "economy-fx",
+        "guardian-news",
+        "fred-macro",
+    ]
     assert "gdeltproject" not in Path("config/research-agents.json").read_text(encoding="utf-8")
     runner = catalog.get("weather").runner
     assert runner.kind == "pipeline"
@@ -153,7 +158,9 @@ def test_research_agent_catalog_loads_builtins_and_keeps_secrets_out_of_json() -
     ]
 
 
-def test_research_agent_requires_its_secret_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_research_agent_requires_its_secret_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     monkeypatch.delenv("GUARDIAN_API_KEY", raising=False)
     catalog = ResearchAgentCatalog.load(Path("config/research-agents.json"))
@@ -231,9 +238,7 @@ async def test_generic_research_agent_returns_a_safe_finding_when_its_api_has_no
 
     monkeypatch.setattr("business_signals.external.httpx.AsyncClient", lambda **kwargs: EmptyClient())
     with caplog.at_level("INFO", logger="uvicorn.error"):
-        finding = await ExternalResearcher(catalog=catalog).research(
-            "public-events", "Milan", "2024-07-01", "2024-07-31", "Sales declined."
-        )
+        finding = await ExternalResearcher(catalog=catalog).research("public-events", "Milan", "2024-07-01", "2024-07-31", "Sales declined.")
 
     assert finding.observation == "No matching public event was found."
     assert finding.relationship == "correlated"
@@ -283,13 +288,7 @@ async def test_generic_research_agent_reads_an_item_list_at_a_nested_json_path(
             return None
 
         def json(self) -> dict[str, object]:
-            return {
-                "response": {
-                    "results": [
-                        {"webTitle": "Milan event", "webUrl": "https://news.example.test/milan"}
-                    ]
-                }
-            }
+            return {"response": {"results": [{"webTitle": "Milan event", "webUrl": "https://news.example.test/milan"}]}}
 
     class Client:
         async def __aenter__(self) -> "Client":
@@ -303,9 +302,7 @@ async def test_generic_research_agent_reads_an_item_list_at_a_nested_json_path(
 
     monkeypatch.setattr("business_signals.external.httpx.AsyncClient", lambda **kwargs: Client())
 
-    finding = await ExternalResearcher(catalog=catalog).research(
-        "historic-news", "Milan", "2024-07-01", "2024-07-31", "Sales declined."
-    )
+    finding = await ExternalResearcher(catalog=catalog).research("historic-news", "Milan", "2024-07-01", "2024-07-31", "Sales declined.")
 
     assert finding.observation == "Milan event"
     assert finding.source_url == "https://news.example.test/milan"
@@ -321,10 +318,7 @@ async def test_guardian_agent_uses_the_documented_content_search_parameters(
     requests: list[dict[str, object]] = []
 
     class Response:
-        url = httpx.URL(
-            "https://content.guardianapis.com/search?"
-            "q=Tel+Aviv&from-date=2024-07-01&to-date=2024-07-30&api-key=test-secret"
-        )
+        url = httpx.URL("https://content.guardianapis.com/search?q=Tel+Aviv&from-date=2024-07-01&to-date=2024-07-30&api-key=test-secret")
         status_code = 200
         headers: dict[str, str] = {}
 
@@ -357,19 +351,17 @@ async def test_guardian_agent_uses_the_documented_content_search_parameters(
 
     monkeypatch.setattr("business_signals.external.httpx.AsyncClient", lambda **kwargs: Client())
 
-    finding = await ExternalResearcher(catalog=catalog).research(
-        "guardian-news", "Tel Aviv", "2024-07-01", "2024-07-30", "Sales declined."
-    )
+    finding = await ExternalResearcher(catalog=catalog).research("guardian-news", "Tel Aviv", "2024-07-01", "2024-07-30", "Sales declined.")
 
     assert requests == [
         {
             "method": "GET",
-                "url": "https://content.guardianapis.com/search",
-                "params": {
-                    "q": "Tel Aviv",
-                    "from-date": "2024-07-01",
-                    "to-date": "2024-07-30",
-                    "page-size": "50",
+            "url": "https://content.guardianapis.com/search",
+            "params": {
+                "q": "Tel Aviv",
+                "from-date": "2024-07-01",
+                "to-date": "2024-07-30",
+                "page-size": "50",
                 "show-fields": "trailText",
                 "api-key": "test-secret",
             },
@@ -402,16 +394,18 @@ def test_research_agent_catalog_supports_a_declarative_keyed_json_api() -> None:
                             "location": "header",
                             "name": "X-Api-Key",
                         },
-                        "steps": [{
-                            "name": "visits",
-                            "url": "https://api.example.test/v1/visits",
-                            "method": "GET",
-                            "query": {
-                              "place": "{subject}",
-                              "from": "{start_date}",
-                              "to": "{end_date}"
+                        "steps": [
+                            {
+                                "name": "visits",
+                                "url": "https://api.example.test/v1/visits",
+                                "method": "GET",
+                                "query": {
+                                    "place": "{subject}",
+                                    "from": "{start_date}",
+                                    "to": "{end_date}",
+                                },
                             }
-                        }],
+                        ],
                         "response": {
                             "items_path": "data",
                             "observation_template": "{visits} visits",

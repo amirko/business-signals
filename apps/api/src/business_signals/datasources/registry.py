@@ -85,20 +85,14 @@ class DatasourceRegistry:
                 {
                     "id": datasource_id,
                     "config": self._serializable_config(config),
-                    "metadata": self._metadata[datasource_id].model_dump(mode="json")
-                    if datasource_id in self._metadata
-                    else None,
+                    "metadata": self._metadata[datasource_id].model_dump(mode="json") if datasource_id in self._metadata else None,
                 }
                 for datasource_id, config in self._configs.items()
             ],
-            "cross_datasource_relations": [
-                relation.model_dump(mode="json") for relation in self._cross_relations.values()
-            ],
+            "cross_datasource_relations": [relation.model_dump(mode="json") for relation in self._cross_relations.values()],
         }
         self._store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor, temporary_path = tempfile.mkstemp(
-            prefix="datasources-", suffix=".json", dir=self._store_path.parent
-        )
+        descriptor, temporary_path = tempfile.mkstemp(prefix="datasources-", suffix=".json", dir=self._store_path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, separators=(",", ":"))
@@ -180,9 +174,7 @@ class DatasourceRegistry:
         return [
             relation
             for relation in self._cross_relations.values()
-            if relation.confirmed
-            and relation.source_datasource in selected
-            and relation.target_datasource in selected
+            if relation.confirmed and relation.source_datasource in selected and relation.target_datasource in selected
         ]
 
     @staticmethod
@@ -201,7 +193,10 @@ class DatasourceRegistry:
     @classmethod
     def _quoted_field(cls, field: str) -> tuple[str, str]:
         schema, table, column = cls._field_parts(field)
-        return f"{cls._quoted_identifier(schema)}.{cls._quoted_identifier(table)}", cls._quoted_identifier(column)
+        return (
+            f"{cls._quoted_identifier(schema)}.{cls._quoted_identifier(table)}",
+            cls._quoted_identifier(column),
+        )
 
     @staticmethod
     def _compatible_types(source_type: str, target_type: str) -> bool:
@@ -226,9 +221,7 @@ class DatasourceRegistry:
             return set()
         table, column = self._quoted_field(field)
         values_sql = ", ".join("'" + value.replace("'", "''") + "'" for value in values)
-        rows = await self.get(datasource_id).execute_read_query(
-            f"SELECT DISTINCT {column} AS value FROM {table} WHERE {column} IN ({values_sql})"
-        )
+        rows = await self.get(datasource_id).execute_read_query(f"SELECT DISTINCT {column} AS value FROM {table} WHERE {column} IN ({values_sql})")
         return {str(row["value"]) for row in rows if row.get("value") is not None}
 
     async def validate_cross_relation(self, payload: CrossDatasourceRelationCreate) -> CrossDatasourceRelation:
@@ -247,8 +240,22 @@ class DatasourceRegistry:
             (table for table in target_metadata.structural_metadata if (table.schema_name, table.name) == (target_schema, target_table_name)),
             None,
         )
-        source_column = next((column for column in source_table.columns if column.name == source_column_name), None) if source_table else None
-        target_column = next((column for column in target_table.columns if column.name == target_column_name), None) if target_table else None
+        source_column = (
+            next(
+                (column for column in source_table.columns if column.name == source_column_name),
+                None,
+            )
+            if source_table
+            else None
+        )
+        target_column = (
+            next(
+                (column for column in target_table.columns if column.name == target_column_name),
+                None,
+            )
+            if target_table
+            else None
+        )
         if not source_column or not target_column:
             raise ValueError("The selected relationship field is no longer present in the discovered schema")
         if not target_column.primary_key:
@@ -279,9 +286,7 @@ class DatasourceRegistry:
         self._save()
         return relation
 
-    async def update_cross_relation(
-        self, relation_id: str, payload: CrossDatasourceRelationCreate
-    ) -> CrossDatasourceRelation:
+    async def update_cross_relation(self, relation_id: str, payload: CrossDatasourceRelationCreate) -> CrossDatasourceRelation:
         if relation_id not in self._cross_relations:
             raise KeyError(f"Relationship {relation_id!r} was not found")
         relation = await self.validate_cross_relation(payload)
@@ -301,7 +306,12 @@ class DatasourceRegistry:
         source_ids = datasource_ids or list(self._sources)
         metadata = [await self.metadata(source_id) for source_id in source_ids]
         existing = {
-            (relation.source_datasource, relation.source_field, relation.target_datasource, relation.target_field)
+            (
+                relation.source_datasource,
+                relation.source_field,
+                relation.target_datasource,
+                relation.target_field,
+            )
             for relation in self._cross_relations.values()
         }
         candidates: list[CrossDatasourceRelation] = []
@@ -319,7 +329,12 @@ class DatasourceRegistry:
                                 if not target_column.primary_key or not self._compatible_types(source_column.data_type, target_column.data_type):
                                     continue
                                 target_field = f"{target_table.schema_name}.{target_table.name}.{target_column.name}"
-                                relation_key = (source.datasource_id, source_field, target.datasource_id, target_field)
+                                relation_key = (
+                                    source.datasource_id,
+                                    source_field,
+                                    target.datasource_id,
+                                    target_field,
+                                )
                                 if relation_key in existing:
                                     continue
                                 sampled_values = await self._distinct_values(source.datasource_id, source_field)
@@ -339,8 +354,7 @@ class DatasourceRegistry:
                                         target_datasource=target.datasource_id,
                                         target_field=target_field,
                                         label=(
-                                            f"{self._humanize_table_name(source_table.name)} belong to "
-                                            f"{self._humanize_table_name(target_table.name)}"
+                                            f"{self._humanize_table_name(source_table.name)} belong to {self._humanize_table_name(target_table.name)}"
                                         ),
                                         confidence=coverage,
                                         sampled_values=len(sampled_values),

@@ -15,7 +15,6 @@ from business_signals.models import (
     DatasourceCreate,
     DatasourceMetadata,
     DatasourceSummary,
-    DatasourceType,
     TableMetadata,
     now_utc,
 )
@@ -34,7 +33,12 @@ class PostgreSQLDatasource(Datasource):
             port=c.port,
             database=c.database,
         )
-        connect_args = {"server_settings": {"application_name": "business-signals", "default_transaction_read_only": "on"}}
+        connect_args = {
+            "server_settings": {
+                "application_name": "business-signals",
+                "default_transaction_read_only": "on",
+            }
+        }
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True, connect_args=connect_args)
 
     async def test_connection(self) -> None:
@@ -73,10 +77,7 @@ class PostgreSQLDatasource(Datasource):
 
     async def lightweight_fingerprint(self) -> str:
         rows = await self._structure_rows()
-        normalized = [
-            (r["table_schema"], r["table_name"], r["column_name"], r["data_type"], r["is_nullable"])
-            for r in rows
-        ]
+        normalized = [(r["table_schema"], r["table_name"], r["column_name"], r["data_type"], r["is_nullable"]) for r in rows]
         return hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
 
     async def discover_structure(self) -> DatasourceMetadata:
@@ -177,10 +178,14 @@ class TimescaleDatasource(PostgreSQLDatasource):
         try:
             async with self.engine.connect() as connection:
                 hypertables = [dict(r) for r in (await connection.execute(text(sql))).mappings()]
-                dimensions = [dict(r) for r in (await connection.execute(text(
-                    "SELECT hypertable_schema, hypertable_name, column_name, dimension_type "
-                    "FROM timescaledb_information.dimensions"
-                ))).mappings()]
+                dimensions = [
+                    dict(r)
+                    for r in (
+                        await connection.execute(
+                            text("SELECT hypertable_schema, hypertable_name, column_name, dimension_type FROM timescaledb_information.dimensions")
+                        )
+                    ).mappings()
+                ]
         except Exception:
             hypertables, dimensions = [], []
 

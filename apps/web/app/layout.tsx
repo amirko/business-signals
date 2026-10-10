@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: 'Business Signals — Root-cause investigations',
-  description: 'An agentic workbench that investigates business anomalies across independent data sources.',
+  description:
+    'An agentic workbench that investigates business anomalies across independent data sources.',
 };
 
 export default function RootLayout({

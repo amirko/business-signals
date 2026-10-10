@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class InvestigationService:
-    def __init__(
-        self, registry: DatasourceRegistry, llm: LLM | None = None, archive_dir: Path | None = None
-    ) -> None:
+    def __init__(self, registry: DatasourceRegistry, llm: LLM | None = None, archive_dir: Path | None = None) -> None:
         self.registry = registry
         self._records: dict[str, InvestigationState] = {}
         self._events: dict[str, list[InvestigationEvent]] = defaultdict(list)
@@ -111,7 +109,10 @@ class InvestigationService:
         return state
 
     async def _run(
-        self, investigation_id: str, input_value: InvestigationState | Command[Any], thread_id: str | None = None
+        self,
+        investigation_id: str,
+        input_value: InvestigationState | Command[Any],
+        thread_id: str | None = None,
     ) -> None:
         config = {"configurable": {"thread_id": thread_id or investigation_id}}
         try:
@@ -168,9 +169,9 @@ class InvestigationService:
         tables = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
         async with await AsyncConnection.connect(settings.checkpoint_database_url, autocommit=True) as connection:
             for table in tables:
-                statement = sql.SQL(
-                    "DELETE FROM {} WHERE thread_id = %s OR LEFT(thread_id, CHAR_LENGTH(%s)) = %s"
-                ).format(sql.Identifier(settings.checkpoint_schema, table))
+                statement = sql.SQL("DELETE FROM {} WHERE thread_id = %s OR LEFT(thread_id, CHAR_LENGTH(%s)) = %s").format(
+                    sql.Identifier(settings.checkpoint_schema, table)
+                )
                 await connection.execute(statement, (investigation_id, continuation_prefix, continuation_prefix))
         logger.info("Deleted persistent checkpoints for conversation %s", investigation_id)
 
@@ -184,16 +185,18 @@ class InvestigationService:
         try:
             async with await AsyncConnection.connect(settings.checkpoint_database_url, autocommit=True) as connection:
                 result = await connection.execute(
-                    sql.SQL(
-                        "SELECT thread_id FROM {} WHERE thread_id LIKE %s "
-                        "ORDER BY checkpoint_id DESC LIMIT 1"
-                    ).format(sql.Identifier(settings.checkpoint_schema, "checkpoints")),
+                    sql.SQL("SELECT thread_id FROM {} WHERE thread_id LIKE %s ORDER BY checkpoint_id DESC LIMIT 1").format(
+                        sql.Identifier(settings.checkpoint_schema, "checkpoints")
+                    ),
                     (prefix,),
                 )
                 row = await result.fetchone()
                 if row and row[0]:
                     thread_id = str(row[0])
-                    logger.info("Recovered legacy follow-up checkpoint thread for conversation %s", state.investigation_id)
+                    logger.info(
+                        "Recovered legacy follow-up checkpoint thread for conversation %s",
+                        state.investigation_id,
+                    )
                     return thread_id
         except Exception:
             logger.exception("Could not recover a legacy follow-up checkpoint for %s", state.investigation_id)
@@ -300,7 +303,15 @@ class InvestigationService:
     @staticmethod
     def _is_negative_follow_up(response: str) -> bool:
         normalized = response.strip().casefold().rstrip(".!?")
-        return normalized in {"no", "no thanks", "no thank you", "nothing else", "that is all", "that's all", "done"}
+        return normalized in {
+            "no",
+            "no thanks",
+            "no thank you",
+            "nothing else",
+            "that is all",
+            "that's all",
+            "done",
+        }
 
     @staticmethod
     def _follow_up_request(follow_up_question: str | None, response: str) -> str:
@@ -314,9 +325,7 @@ class InvestigationService:
         if start is None:
             return answer
         remaining = follow_up_question[start.end() :]
-        next_option = re.search(
-            r"(?:,|;|\bor\b|\band\b)\s*\(\s*[a-z]\s*\)", remaining, flags=re.IGNORECASE
-        )
+        next_option = re.search(r"(?:,|;|\bor\b|\band\b)\s*\(\s*[a-z]\s*\)", remaining, flags=re.IGNORECASE)
         option_text = (remaining[: next_option.start()] if next_option else remaining).strip(" ,;:.?")
         return option_text or answer
 
@@ -339,9 +348,7 @@ class InvestigationService:
     @staticmethod
     def _continuation_context(state: InvestigationState) -> str:
         """Give a fresh continuation enough prior outcome context without rerunning the old investigation."""
-        previous_analysis = state.final_analysis or (
-            state.conversation_turns[-1].answer if state.conversation_turns else None
-        )
+        previous_analysis = state.final_analysis or (state.conversation_turns[-1].answer if state.conversation_turns else None)
         if previous_analysis is None:
             return "The previous attempt ended before an answer was produced."
         conclusion_context = (
@@ -351,9 +358,7 @@ class InvestigationService:
         )
         if not state.human_feedback:
             return conclusion_context
-        prior_answers = "\n".join(
-            f"- {item.question} Answer: {item.response}" for item in state.human_feedback
-        )
+        prior_answers = "\n".join(f"- {item.question} Answer: {item.response}" for item in state.human_feedback)
         return f"{conclusion_context}\nEarlier confirmed preferences:\n{prior_answers}"
 
     async def skip_clarification(self, investigation_id: str, question: str) -> InvestigationState:
@@ -415,9 +420,7 @@ class InvestigationService:
                 message="Clarification skipped; investigating the new question.",
             )
         )
-        self._tasks[investigation_id] = asyncio.create_task(
-            self._run(investigation_id, replacement, thread_id=continuation_thread_id)
-        )
+        self._tasks[investigation_id] = asyncio.create_task(self._run(investigation_id, replacement, thread_id=continuation_thread_id))
         return replacement
 
     async def follow_up(self, investigation_id: str, response: str) -> InvestigationState:
@@ -438,7 +441,10 @@ class InvestigationService:
         if self._is_negative_follow_up(response):
             final_analysis = state.final_analysis.model_copy(update={"follow_up_question": None}) if state.final_analysis else None
             completed = state.model_copy(
-                update={"human_feedback": [*state.human_feedback, feedback], "final_analysis": final_analysis}
+                update={
+                    "human_feedback": [*state.human_feedback, feedback],
+                    "final_analysis": final_analysis,
+                }
             )
             self._records[investigation_id] = completed
             self._save_archive(completed)
@@ -485,14 +491,10 @@ class InvestigationService:
         )
         self._records[investigation_id] = replacement
         self._save_archive(replacement)
-        self._tasks[investigation_id] = asyncio.create_task(
-            self._run(investigation_id, replacement, thread_id=continuation_thread_id)
-        )
+        self._tasks[investigation_id] = asyncio.create_task(self._run(investigation_id, replacement, thread_id=continuation_thread_id))
         return replacement
 
-    async def events(
-        self, investigation_id: str, after: int = 0, *, live_only: bool = False
-    ) -> AsyncIterator[InvestigationEvent]:
+    async def events(self, investigation_id: str, after: int = 0, *, live_only: bool = False) -> AsyncIterator[InvestigationEvent]:
         self.get(investigation_id)
         if live_only:
             after = len(self._events[investigation_id])

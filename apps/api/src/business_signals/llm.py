@@ -112,8 +112,8 @@ class DirectAnswerPlan(BaseModel):
     datasource_id: str
     sql: str
     purpose: str
-    supporting_queries: list["DirectAnswerQuery"] = Field(default_factory=list, max_length=3)
-    combination: "DirectAnswerCombination | None" = None
+    supporting_queries: list[DirectAnswerQuery] = Field(default_factory=list, max_length=3)
+    combination: DirectAnswerCombination | None = None
 
 
 class DirectAnswerQuery(BaseModel):
@@ -235,7 +235,10 @@ class OpenAICompatibleLLM(LLM):
                 model=settings.ai_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"},
+                    {
+                        "role": "user",
+                        "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}",
+                    },
                 ],
                 response_format=response_model,
             )
@@ -283,7 +286,12 @@ class AnthropicLLM(LLM):
             "model": settings.ai_model,
             "max_tokens": 4096,
             "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}"}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"{instruction}\n\nInput:\n{json.dumps(payload, default=str)}",
+                }
+            ],
             "tools": [
                 {
                     "name": "submit_structured_response",
@@ -307,11 +315,7 @@ class AnthropicLLM(LLM):
                 response.raise_for_status()
                 content = response.json().get("content", [])
             tool_use = next(
-                (
-                    block
-                    for block in content
-                    if block.get("type") == "tool_use" and block.get("name") == "submit_structured_response"
-                ),
+                (block for block in content if block.get("type") == "tool_use" and block.get("name") == "submit_structured_response"),
                 None,
             )
             if not tool_use or not isinstance(tool_use.get("input"), dict):
@@ -322,7 +326,9 @@ class AnthropicLLM(LLM):
             raise
 
         logger.info(
-            "LLM step completed: provider=anthropic step=%s output=%s", step_name, result.model_dump_json()
+            "LLM step completed: provider=anthropic step=%s output=%s",
+            step_name,
+            result.model_dump_json(),
         )
         return result
 

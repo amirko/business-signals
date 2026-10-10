@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import sqlglot
@@ -39,18 +39,9 @@ class DirectAnswerMixin:
     """Direct-answer path shared by the LangGraph investigation workflow."""
 
     @staticmethod
-    def _redact_internal_identifier_columns(
-        rows: list[dict[str, Any]], identifier_columns: set[str]
-    ) -> list[dict[str, Any]]:
+    def _redact_internal_identifier_columns(rows: list[dict[str, Any]], identifier_columns: set[str]) -> list[dict[str, Any]]:
         """Keep schema-declared keys inside execution, never in a direct-answer result."""
-        return [
-            {
-                key: value
-                for key, value in row.items()
-                if key not in identifier_columns
-            }
-            for row in rows
-        ]
+        return [{key: value for key, value in row.items() if key not in identifier_columns} for row in rows]
 
     @staticmethod
     def _customer_facing_name(name: Any, identifier: Any) -> str:
@@ -61,9 +52,7 @@ class DirectAnswerMixin:
         return str(name)
 
     @classmethod
-    def _remove_redundant_entity_labels(
-        cls, rows: list[dict[str, Any]], entities: list[ResolvedEntityReference]
-    ) -> list[dict[str, Any]]:
+    def _remove_redundant_entity_labels(cls, rows: list[dict[str, Any]], entities: list[ResolvedEntityReference]) -> list[dict[str, Any]]:
         """Keep the safe display label, not an alternate catalog label derived from an internal key."""
         if not entities:
             return rows
@@ -75,18 +64,14 @@ class DirectAnswerMixin:
                     for key, value in row.items()
                     if key == "display_name"
                     or not any(
-                        isinstance(value, str)
-                        and cls._customer_facing_name(value, entity.identifier) == entity.display_name
-                        for entity in entities
+                        isinstance(value, str) and cls._customer_facing_name(value, entity.identifier) == entity.display_name for entity in entities
                     )
                 }
             )
         return cleaned_rows
 
     @classmethod
-    def _redact_resolved_entity_references(
-        cls, analysis: FinalAnalysis, entities: list[ResolvedEntityReference]
-    ) -> FinalAnalysis:
+    def _redact_resolved_entity_references(cls, analysis: FinalAnalysis, entities: list[ResolvedEntityReference]) -> FinalAnalysis:
         """Guarantee that final text uses the resolved display name rather than a retained key."""
         if not entities:
             return analysis
@@ -146,14 +131,11 @@ class DirectAnswerMixin:
     @staticmethod
     def _infer_display_column(table: dict[str, Any]) -> str | None:
         """Infer an entity label from schema roles and types, never from a hard-coded column name."""
-        key_columns = {
-            column["name"] for column in table["columns"] if column.get("pk")
-        }
-        key_columns.update(
-            foreign_key["column_name"] for foreign_key in table.get("foreign_keys", []) if foreign_key.get("column_name")
-        )
+        key_columns = {column["name"] for column in table["columns"] if column.get("pk")}
+        key_columns.update(foreign_key["column_name"] for foreign_key in table.get("foreign_keys", []) if foreign_key.get("column_name"))
         textual_columns = [
-            column for column in table["columns"]
+            column
+            for column in table["columns"]
             if column["name"] not in key_columns
             and any(token in str(column.get("type", "")).casefold() for token in ("char", "text", "string", "citext"))
         ]
@@ -212,9 +194,7 @@ class DirectAnswerMixin:
                 normalized.append(row)
                 continue
             updated = dict(row)
-            updated["rate_change_percent"] = (
-                None if earlier == 0 else float((later - earlier) * Decimal("100") / earlier)
-            )
+            updated["rate_change_percent"] = None if earlier == 0 else float((later - earlier) * Decimal("100") / earlier)
             normalized.append(updated)
         return normalized
 
@@ -236,11 +216,7 @@ class DirectAnswerMixin:
             table_name = str(table.get("name", ""))
             known_columns: dict[str, set[str]] = {}
             for column in table.get("columns", []):
-                values = {
-                    str(value).casefold()
-                    for value in column.get("representative_values", [])
-                    if isinstance(value, str)
-                }
+                values = {str(value).casefold() for value in column.get("representative_values", []) if isinstance(value, str)}
                 if values:
                     column_name = str(column.get("name", ""))
                     known_columns[column_name] = values
@@ -295,10 +271,12 @@ class DirectAnswerMixin:
             elif isinstance(expression, exp.In):
                 column = column_for(expression.this)
                 if column is not None:
-                    checks.append((column, [
-                        str(value.this) for value in expression.expressions
-                        if isinstance(value, exp.Literal) and value.is_string
-                    ]))
+                    checks.append(
+                        (
+                            column,
+                            [str(value.this) for value in expression.expressions if isinstance(value, exp.Literal) and value.is_string],
+                        )
+                    )
 
         invalid: dict[str, tuple[list[str], set[str]]] = {}
         for column, values in checks:
@@ -320,8 +298,7 @@ class DirectAnswerMixin:
                 invalid[field] = ([*(previous[0] if previous else []), *unsupported], permitted)
         if invalid:
             details = "; ".join(
-                f"{field} used {sorted(set(values))}; known values are {sorted(permitted)}"
-                for field, (values, permitted) in sorted(invalid.items())
+                f"{field} used {sorted(set(values))}; known values are {sorted(permitted)}" for field, (values, permitted) in sorted(invalid.items())
             )
             raise UnsafeQueryError(f"Query uses values not present in the discovered controlled vocabulary: {details}")
 
@@ -339,9 +316,7 @@ class DirectAnswerMixin:
         return has_unavailable_value and not has_numeric_value
 
     @staticmethod
-    def _named_entity_ranking_analysis(
-        state: InvestigationState, draft: FinalAnalysis
-    ) -> FinalAnalysis | None:
+    def _named_entity_ranking_analysis(state: InvestigationState, draft: FinalAnalysis) -> FinalAnalysis | None:
         """Make a ranking deterministic once the safe lookup has supplied a display name."""
         rows: list[dict[str, Any]] = []
         for observation in reversed(state.observations):
@@ -359,18 +334,11 @@ class DirectAnswerMixin:
         ranking_terms = ("top", "most", "best", "highest", "popular", "least")
         # A grouped follow-up for one retained item has the same display name on every row;
         # it is a breakdown, never a ranking of that item repeated once per group.
-        if (
-            not any(term in current_question for term in ranking_terms)
-            or len({str(row["display_name"]) for row in rows}) < 2
-        ):
+        if not any(term in current_question for term in ranking_terms) or len({str(row["display_name"]) for row in rows}) < 2:
             return None
 
         metric_key = next(
-            (
-                key
-                for key, value in rows[0].items()
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            ),
+            (key for key, value in rows[0].items() if isinstance(value, (int, float)) and not isinstance(value, bool)),
             None,
         )
         metric_label = state.metric_definition.name if state.metric_definition else "the requested measure"
@@ -395,8 +363,7 @@ class DirectAnswerMixin:
         caveats = [
             caveat
             for caveat in draft.caveats
-            if "names were not available" not in caveat.casefold()
-            and "totals (exact units sold" not in caveat.casefold()
+            if "names were not available" not in caveat.casefold() and "totals (exact units sold" not in caveat.casefold()
         ]
         return draft.model_copy(
             update={
@@ -431,9 +398,7 @@ class DirectAnswerMixin:
             rows = [row for row in result_observation.value["rows"] if isinstance(row, dict)]
             first_display_name = next((str(row["display_name"]) for row in rows if row.get("display_name")), None)
             source = next((item for item in metadata if item["id"] == result_observation.source), None)
-            has_time_series = bool(
-                source and any(table.get("roles", {}).get("time_fields", []) for table in source["tables"])
-            )
+            has_time_series = bool(source and any(table.get("roles", {}).get("time_fields", []) for table in source["tables"]))
             ranking_terms = ("top", "most", "best", "highest", "popular", "valuable")
             if first_display_name and has_time_series and any(term in state.question.casefold() for term in ranking_terms):
                 metric = state.metric_definition.name if state.metric_definition else "the requested measure"
@@ -460,7 +425,11 @@ class DirectAnswerMixin:
             plan = await self.llm.structured(
                 DirectAnswerPlan,
                 prompts.load("direct_answer_datasource_correction"),
-                {"question": state.question, "datasources": metadata, "previous_plan": plan.model_dump(mode="json")},
+                {
+                    "question": state.question,
+                    "datasources": metadata,
+                    "previous_plan": plan.model_dump(mode="json"),
+                },
             )
         if self._defers_datasource_selection(plan):
             raise UnsafeQueryError("Direct-answer planner attempted to defer datasource selection")
@@ -470,20 +439,18 @@ class DirectAnswerMixin:
                 DirectAnswerQuery(datasource_id=plan.datasource_id, sql=plan.sql, purpose=plan.purpose),
                 *plan.supporting_queries,
             ]
-            if (
-                query.datasource_id in {source.id for source in state.datasources}
-                and re.search(r"'(?:[^']|'')*'", query.sql) is not None
-            )
+            if (query.datasource_id in {source.id for source in state.datasources} and re.search(r"'(?:[^']|'')*'", query.sql) is not None)
         }
         if selected_source_ids:
             # Query planning is already complete, so enrich just the selected
             # sources before the execution guardrail (and any repair prompt).
-            metadata = await self._metadata_payload(
-                state, include_categorical_values_for=selected_source_ids
-            )
+            metadata = await self._metadata_payload(state, include_categorical_values_for=selected_source_ids)
         missing_lookup_relation = self._requested_relation_without_lookup(state, plan)
         if missing_lookup_relation is not None:
-            logger.warning("Direct-answer plan omitted a requested readable lookup: relation=%s", missing_lookup_relation.id)
+            logger.warning(
+                "Direct-answer plan omitted a requested readable lookup: relation=%s",
+                missing_lookup_relation.id,
+            )
             plan = await self.llm.structured(
                 DirectAnswerPlan,
                 prompts.load("direct_answer_relationship_correction"),
@@ -496,7 +463,10 @@ class DirectAnswerMixin:
             )
             if self._requested_relation_without_lookup(state, plan) is not None:
                 raise UnsafeQueryError("Direct-answer plan omitted the readable lookup required for the requested breakdown")
-        query_plans = [DirectAnswerQuery(datasource_id=plan.datasource_id, sql=plan.sql, purpose=plan.purpose), *plan.supporting_queries]
+        query_plans = [
+            DirectAnswerQuery(datasource_id=plan.datasource_id, sql=plan.sql, purpose=plan.purpose),
+            *plan.supporting_queries,
+        ]
         logger.info(
             "Direct-answer plan ready: primary_datasource=%s supporting_queries=%d combination=%s retained_entities=%d",
             plan.datasource_id,
@@ -522,24 +492,20 @@ class DirectAnswerMixin:
             primary_fields = self._combination_fields(combination.primary_key)
             supporting_fields = self._combination_fields(combination.supporting_key)
             supporting_index = combination.supporting_query_index + 1
-            executed[supporting_index] = await self._execute_direct_query(
-                state, query_plans[supporting_index], metadata
-            )
+            executed[supporting_index] = await self._execute_direct_query(state, query_plans[supporting_index], metadata)
             relation = (
                 self._relation_for_primary_filter(
-                    state, query_plans[0], query_plans[supporting_index], primary_fields[0], metadata
+                    state,
+                    query_plans[0],
+                    query_plans[supporting_index],
+                    primary_fields[0],
+                    metadata,
                 )
                 if len(primary_fields) == len(supporting_fields) == 1
                 else None
             )
             supporting_rows = executed[supporting_index][0]
-            values = list(
-                dict.fromkeys(
-                    str(row[supporting_fields[0]])
-                    for row in supporting_rows
-                    if row.get(supporting_fields[0]) is not None
-                )
-            )[:100]
+            values = list(dict.fromkeys(str(row[supporting_fields[0]]) for row in supporting_rows if row.get(supporting_fields[0]) is not None))[:100]
             if relation is not None and values:
                 query_plans[0] = query_plans[0].model_copy(
                     update={"sql": self._add_relation_filter(query_plans[0].sql, relation.source_field, values)}
@@ -575,9 +541,8 @@ class DirectAnswerMixin:
                 supporting_fields = self._combination_fields(combination.supporting_key)
                 if len(primary_fields) != len(supporting_fields):
                     raise UnsafeQueryError("Direct-answer combination uses a different number of primary and supporting fields")
-                if (
-                    any(any(field not in row for field in primary_fields) for row in rows)
-                    or any(any(field not in row for field in supporting_fields) for row in supporting_rows)
+                if any(any(field not in row for field in primary_fields) for row in rows) or any(
+                    any(field not in row for field in supporting_fields) for row in supporting_rows
                 ):
                     raise UnsafeQueryError("Direct-answer combination refers to fields not returned by its queries")
                 primary_values = {self._combination_row_key(row, primary_fields) for row in rows}
@@ -589,29 +554,35 @@ class DirectAnswerMixin:
                 else:
                     rows = [
                         *rows,
-                        *[
-                            row for row in supporting_rows
-                            if self._combination_row_key(row, supporting_fields) not in primary_values
-                        ],
+                        *[row for row in supporting_rows if self._combination_row_key(row, supporting_fields) not in primary_values],
                     ]
         rows = self._merge_approved_supporting_rows(
             state,
             rows,
             datasource_id,
             query_plans[0].sql,
-            [
-                (item[0], query_plans[index])
-                for index, item in enumerate(executed_results[1:], start=1)
-            ],
+            [(item[0], query_plans[index]) for index, item in enumerate(executed_results[1:], start=1)],
         )
         if plan.combination is not None and plan.combination.operation == "aggregate":
             rows = self._aggregate_direct_answer_rows(rows, plan.combination)
-        enriched_rows, enrichment_steps, enrichment_queries, resolved_entities = await self._resolve_display_names(
-            state, metadata, datasource_id, sql, rows
-        )
+        (
+            enriched_rows,
+            enrichment_steps,
+            enrichment_queries,
+            resolved_entities,
+        ) = await self._resolve_display_names(state, metadata, datasource_id, sql, rows)
         all_resolved_entities = self._merge_resolved_entities(state.resolved_entities, resolved_entities)
         user_facing_rows = self._remove_redundant_entity_labels(enriched_rows, all_resolved_entities)
-        steps = [InvestigationStep(iteration=1, action=item[3], datasource_id=item[1], rationale="Direct factual answer", query=item[2]) for item in executed_results]
+        steps = [
+            InvestigationStep(
+                iteration=1,
+                action=item[3],
+                datasource_id=item[1],
+                rationale="Direct factual answer",
+                query=item[2],
+            )
+            for item in executed_results
+        ]
         observation = Observation(
             description=purpose,
             value={
@@ -635,14 +606,9 @@ class DirectAnswerMixin:
         }
 
     @staticmethod
-    def _merge_resolved_entities(
-        existing: list[ResolvedEntityReference], new: list[ResolvedEntityReference]
-    ) -> list[ResolvedEntityReference]:
+    def _merge_resolved_entities(existing: list[ResolvedEntityReference], new: list[ResolvedEntityReference]) -> list[ResolvedEntityReference]:
         """Keep a small, de-duplicated backend lookup context across conversation turns."""
-        by_identity = {
-            (entity.datasource_id, entity.table, entity.identifier_field, entity.identifier): entity
-            for entity in existing
-        }
+        by_identity = {(entity.datasource_id, entity.table, entity.identifier_field, entity.identifier): entity for entity in existing}
         for entity in new:
             by_identity[(entity.datasource_id, entity.table, entity.identifier_field, entity.identifier)] = entity
         return list(by_identity.values())[-100:]
@@ -671,16 +637,18 @@ class DirectAnswerMixin:
             return [node]
 
         conditions = [
-            condition
-            for condition in leaves(where.this)
-            if not any(column.name in entity_columns for column in condition.find_all(exp.Column))
+            condition for condition in leaves(where.this) if not any(column.name in entity_columns for column in condition.find_all(exp.Column))
         ]
         if not conditions:
             return [scope for scope in state.query_scopes if not (scope.datasource_id == datasource_id and scope.table == table)]
         predicate = conditions[0]
         for condition in conditions[1:]:
             predicate = exp.and_(predicate, condition)
-        scope = QueryScope(datasource_id=datasource_id, table=table, predicate_sql=predicate.sql(dialect="postgres"))
+        scope = QueryScope(
+            datasource_id=datasource_id,
+            table=table,
+            predicate_sql=predicate.sql(dialect="postgres"),
+        )
         return [
             *[item for item in state.query_scopes if not (item.datasource_id == datasource_id and item.table == table)],
             scope,
@@ -718,11 +686,7 @@ class DirectAnswerMixin:
             # outer WHERE would silently turn an all-population measure into the filtered subset.
             # Keep unrelated scope conditions, such as the date range, but leave an explicitly
             # compared dimension to the planner.
-            filter_columns = {
-                column.name
-                for aggregate_filter in statement.find_all(exp.Filter)
-                for column in aggregate_filter.find_all(exp.Column)
-            }
+            filter_columns = {column.name for aggregate_filter in statement.find_all(exp.Filter) for column in aggregate_filter.find_all(exp.Column)}
 
             def leaves(node: exp.Expression) -> list[exp.Expression]:
                 if isinstance(node, exp.And):
@@ -730,9 +694,7 @@ class DirectAnswerMixin:
                 return [node]
 
             inherited_conditions = [
-                condition
-                for condition in leaves(predicate)
-                if not any(column.name in filter_columns for column in condition.find_all(exp.Column))
+                condition for condition in leaves(predicate) if not any(column.name in filter_columns for column in condition.find_all(exp.Column))
             ]
             if not inherited_conditions:
                 logger.info(
@@ -747,11 +709,13 @@ class DirectAnswerMixin:
             where = select.args.get("where")
             select.set(
                 "where",
-                exp.Where(
-                    this=exp.and_(where.this, inherited_predicate) if where else inherited_predicate
-                ),
+                exp.Where(this=exp.and_(where.this, inherited_predicate) if where else inherited_predicate),
             )
-            logger.info("Applied inherited query scope: datasource=%s table=%s", scope.datasource_id, scope.table)
+            logger.info(
+                "Applied inherited query scope: datasource=%s table=%s",
+                scope.datasource_id,
+                scope.table,
+            )
             return query.model_copy(update={"sql": statement.sql(dialect="postgres")})
         return query
 
@@ -773,9 +737,7 @@ class DirectAnswerMixin:
             return True
         return any(entity.display_name.casefold() in question for entity in state.resolved_entities)
 
-    def _constrain_query_to_referenced_entity(
-        self, state: InvestigationState, query: DirectAnswerQuery
-    ) -> DirectAnswerQuery:
+    def _constrain_query_to_referenced_entity(self, state: InvestigationState, query: DirectAnswerQuery) -> DirectAnswerQuery:
         """Apply an approved key relationship when a follow-up explicitly names a retained entity."""
         if not state.resolved_entities or not self._question_refers_to_retained_entity(state):
             return query
@@ -788,11 +750,7 @@ class DirectAnswerMixin:
                 continue
             target_table, target_field = relation.target_field.rsplit(".", 1)
             for entity in state.resolved_entities:
-                if (
-                    entity.datasource_id == relation.target_datasource
-                    and entity.table == target_table
-                    and entity.identifier_field == target_field
-                ):
+                if entity.datasource_id == relation.target_datasource and entity.table == target_table and entity.identifier_field == target_field:
                     if relation.id not in matching_relations:
                         matching_relations[relation.id] = (relation, [])
                     matching_relations[relation.id][1].append(entity)
@@ -800,7 +758,11 @@ class DirectAnswerMixin:
             return query
         relation, entities = next(iter(matching_relations.values()))
         identifiers = list(dict.fromkeys(entity.identifier for entity in entities))
-        logger.info("Applying retained entity context before direct-answer query: relation=%s entities=%d", relation.id, len(identifiers))
+        logger.info(
+            "Applying retained entity context before direct-answer query: relation=%s entities=%d",
+            relation.id,
+            len(identifiers),
+        )
         return query.model_copy(
             update={
                 # A planner occasionally compares the key column to a display label it saw in
@@ -848,10 +810,7 @@ class DirectAnswerMixin:
                 )
             if isinstance(expression, exp.In) and isinstance(expression.this, exp.Column) and expression.this.name == column:
                 values = list(expression.expressions)
-                return bool(values) and all(
-                    isinstance(value, exp.Literal) and value.is_string and str(value.this) in trusted
-                    for value in values
-                )
+                return bool(values) and all(isinstance(value, exp.Literal) and value.is_string and str(value.this) in trusted for value in values)
             return False
 
         def strip(expression: exp.Expression) -> exp.Expression | None:
@@ -873,7 +832,10 @@ class DirectAnswerMixin:
         if cleaned is where.this:
             return sql
         select.set("where", exp.Where(this=cleaned) if cleaned is not None else None)
-        logger.info("Replaced an untrusted retained-entity predicate with its stored reference: field=%s", source_field)
+        logger.info(
+            "Replaced an untrusted retained-entity predicate with its stored reference: field=%s",
+            source_field,
+        )
         return statement.sql(dialect="postgres")
 
     def _requested_relation_without_lookup(self, state: InvestigationState, plan: DirectAnswerPlan) -> Any | None:
@@ -885,13 +847,10 @@ class DirectAnswerMixin:
             table_word = target_table.rsplit(".", 1)[-1].casefold().rstrip("s")
             if not table_word or not re.search(rf"\b{re.escape(table_word)}s?\b", question):
                 continue
-            if relation.source_datasource != plan.datasource_id or not query_references_table(
-                plan.sql, relation.source_field.rsplit(".", 1)[0]
-            ):
+            if relation.source_datasource != plan.datasource_id or not query_references_table(plan.sql, relation.source_field.rsplit(".", 1)[0]):
                 continue
             if not any(
-                query.datasource_id == relation.target_datasource
-                and query_references_table(query.sql, target_table)
+                query.datasource_id == relation.target_datasource and query_references_table(query.sql, target_table)
                 for query in plan.supporting_queries
             ):
                 return relation
@@ -932,21 +891,13 @@ class DirectAnswerMixin:
                 )
                 if supporting_key is None or not any(primary_key in row for row in merged_rows):
                     continue
-                lookup = {
-                    str(row[supporting_key]): row
-                    for row in supporting_rows
-                    if row.get(supporting_key) is not None
-                }
+                lookup = {str(row[supporting_key]): row for row in supporting_rows if row.get(supporting_key) is not None}
                 if not lookup:
                     continue
                 merged_rows = [
                     {
                         **row,
-                        **{
-                            key: value
-                            for key, value in lookup[str(row[primary_key])].items()
-                            if key != supporting_key and key not in row
-                        },
+                        **{key: value for key, value in lookup[str(row[primary_key])].items() if key != supporting_key and key not in row},
                     }
                     if row.get(primary_key) is not None and str(row[primary_key]) in lookup
                     else row
@@ -1049,9 +1000,7 @@ class DirectAnswerMixin:
                 continue
             source_table = relation.source_field.rsplit(".", 1)[0]
             target_table = relation.target_field.rsplit(".", 1)[0]
-            if query_references_table(primary_query.sql, source_table) and query_references_table(
-                supporting_query.sql, target_table
-            ):
+            if query_references_table(primary_query.sql, source_table) and query_references_table(supporting_query.sql, target_table):
                 return relation
         return None
 
@@ -1066,9 +1015,7 @@ class DirectAnswerMixin:
         except sqlglot.errors.ParseError as exc:
             raise UnsafeQueryError(f"Could not apply approved relationship filter: {exc}") from exc
         matching_tables = [
-            table
-            for table in statement.find_all(exp.Table)
-            if (f"{table.db}.{table.name}" if table.db else table.name) == source_table
+            table for table in statement.find_all(exp.Table) if (f"{table.db}.{table.name}" if table.db else table.name) == source_table
         ]
         if not matching_tables:
             raise UnsafeQueryError("Could not apply an approved relationship filter to this query")
@@ -1106,7 +1053,11 @@ class DirectAnswerMixin:
             query = await self.llm.structured(
                 DirectAnswerQuery,
                 prompts.load("direct_query_datasource_correction"),
-                {"question": state.question, "datasources": metadata, "valid_datasource_ids": sorted(source_ids)},
+                {
+                    "question": state.question,
+                    "datasources": metadata,
+                    "valid_datasource_ids": sorted(source_ids),
+                },
             )
             if query.datasource_id not in source_ids:
                 raise UnsafeQueryError("Direct-answer query selected a datasource outside this request")
@@ -1114,9 +1065,7 @@ class DirectAnswerMixin:
         allowed_tables = {table["name"] for table in source_metadata["tables"]}
         for attempt in range(2):
             try:
-                bound_sql = self._case_insensitive_text_filters(
-                    self._bind_trusted_entity_references(state, query)
-                )
+                bound_sql = self._case_insensitive_text_filters(self._bind_trusted_entity_references(state, query))
                 safe_sql = validate_query_tables(validate_read_query(bound_sql), allowed_tables)
                 self._validate_categorical_filter_values(safe_sql, source_metadata)
                 purpose = self._safe_direct_answer_text(query.purpose)
@@ -1128,7 +1077,11 @@ class DirectAnswerMixin:
                         safe_sql,
                     )
                 else:
-                    logger.info("Direct-answer query prepared: datasource=%s sql=%s", query.datasource_id, safe_sql)
+                    logger.info(
+                        "Direct-answer query prepared: datasource=%s sql=%s",
+                        query.datasource_id,
+                        safe_sql,
+                    )
                 await self._emit(state, "QueryStarted", purpose, datasource_id=query.datasource_id)
                 rows = await self.registry.get(query.datasource_id).execute_read_query(safe_sql)
                 rows = self._normalize_before_after_rows(rows)
@@ -1138,22 +1091,41 @@ class DirectAnswerMixin:
                     len(rows),
                     purpose,
                 )
-                await self._emit(state, "QueryCompleted", "The data check is complete.", datasource_id=query.datasource_id, row_count=len(rows))
+                await self._emit(
+                    state,
+                    "QueryCompleted",
+                    "The data check is complete.",
+                    datasource_id=query.datasource_id,
+                    row_count=len(rows),
+                )
                 return rows, query.datasource_id, safe_sql, purpose
             except (ProgrammingError, UnsafeQueryError) as exc:
                 if attempt:
                     raise
-                logger.warning("Direct-answer query was rejected; requesting one corrected query: datasource=%s error=%s", query.datasource_id, exc)
-                await self._emit(state, "QueryRejected", "The first check needed an adjustment, so the answer is trying again.", datasource_id=query.datasource_id)
+                logger.warning(
+                    "Direct-answer query was rejected; requesting one corrected query: datasource=%s error=%s",
+                    query.datasource_id,
+                    exc,
+                )
+                await self._emit(
+                    state,
+                    "QueryRejected",
+                    "The first check needed an adjustment, so the answer is trying again.",
+                    datasource_id=query.datasource_id,
+                )
                 query = await self.llm.structured(
                     DirectAnswerQuery,
                     prompts.load("direct_query_guardrail_correction"),
-                    {"question": state.question, "selected_datasource_id": source_metadata["id"], "selected_datasource": source_metadata, "previous_query": query.sql, "rejection_reason": str(exc)},
+                    {
+                        "question": state.question,
+                        "selected_datasource_id": source_metadata["id"],
+                        "selected_datasource": source_metadata,
+                        "previous_query": query.sql,
+                        "rejection_reason": str(exc),
+                    },
                 )
                 if query.datasource_id != source_metadata["id"]:
-                    raise UnsafeQueryError(
-                        "Corrected direct-answer query changed the selected datasource"
-                    ) from exc
+                    raise UnsafeQueryError("Corrected direct-answer query changed the selected datasource") from exc
         raise RuntimeError("A direct-answer query result was not produced")
 
     def _bind_trusted_entity_references(self, state: InvestigationState, query: DirectAnswerQuery) -> str:
@@ -1193,13 +1165,16 @@ class DirectAnswerMixin:
                         candidates.append(entity)
                         break
             unique = {
-                (candidate.datasource_id, candidate.table, candidate.identifier_field, candidate.identifier): candidate
+                (
+                    candidate.datasource_id,
+                    candidate.table,
+                    candidate.identifier_field,
+                    candidate.identifier,
+                ): candidate
                 for candidate in candidates
             }
             if len(unique) != 1:
-                raise UnsafeQueryError(
-                    f"Direct-answer query placeholder {{{{{placeholder}}}}} does not identify one stored entity"
-                )
+                raise UnsafeQueryError(f"Direct-answer query placeholder {{{{{placeholder}}}}} does not identify one stored entity")
             values[placeholder] = next(iter(unique.values())).identifier
 
         bound_sql = query.sql
@@ -1225,11 +1200,7 @@ class DirectAnswerMixin:
             source_column = relation.source_field.rsplit(".", 1)[-1]
             target_table, target_field = relation.target_field.rsplit(".", 1)
             for entity in state.resolved_entities:
-                if (
-                    entity.datasource_id == relation.target_datasource
-                    and entity.table == target_table
-                    and entity.identifier_field == target_field
-                ):
+                if entity.datasource_id == relation.target_datasource and entity.table == target_table and entity.identifier_field == target_field:
                     key = (source_column, entity.display_name)
                     # A duplicate display name is not safe to turn into a key automatically.
                     replacements[key] = entity.identifier if key not in replacements else ""
@@ -1274,20 +1245,10 @@ class DirectAnswerMixin:
         source_metadata = next((candidate for candidate in metadata if candidate["id"] == source_id), None)
         if source_metadata is None:
             return rows, [], 0, []
-        queried_tables = [
-            table for table in source_metadata["tables"] if query_references_table(sql, table["name"])
-        ]
-        key_columns = {
-            column["name"]
-            for table in queried_tables
-            for column in table["columns"]
-            if column["pk"]
-        }
+        queried_tables = [table for table in source_metadata["tables"] if query_references_table(sql, table["name"])]
+        key_columns = {column["name"] for table in queried_tables for column in table["columns"] if column["pk"]}
         key_columns.update(
-            foreign_key["column_name"]
-            for table in queried_tables
-            for foreign_key in table["foreign_keys"]
-            if foreign_key.get("column_name")
+            foreign_key["column_name"] for table in queried_tables for foreign_key in table["foreign_keys"] if foreign_key.get("column_name")
         )
         lookup_candidates: list[tuple[str, dict[str, Any], dict[str, Any], str, str]] = []
         for table in queried_tables:
@@ -1298,12 +1259,23 @@ class DirectAnswerMixin:
             for foreign_key in table["foreign_keys"]:
                 target_name = f"{foreign_key.get('foreign_schema', '')}.{foreign_key.get('foreign_table', '')}".strip(".")
                 target_column = foreign_key.get("foreign_column")
-                target_table = next((item for item in source_metadata["tables"] if item["name"] == target_name), None)
+                target_table = next(
+                    (item for item in source_metadata["tables"] if item["name"] == target_name),
+                    None,
+                )
                 if target_table and target_column:
                     target_columns = {column["name"] for column in target_table["columns"]}
                     target_display = self._infer_display_column(target_table)
                     if target_display:
-                        lookup_candidates.append((foreign_key["column_name"], source_metadata, target_table, target_column, target_display))
+                        lookup_candidates.append(
+                            (
+                                foreign_key["column_name"],
+                                source_metadata,
+                                target_table,
+                                target_column,
+                                target_display,
+                            )
+                        )
 
         relations = self.registry.approved_cross_relations([candidate["id"] for candidate in metadata])
         for relation in relations:
@@ -1313,7 +1285,10 @@ class DirectAnswerMixin:
             target_identifier = relation.target_field.rsplit(".", 1)[-1]
             target_table_name = relation.target_field.rsplit(".", 1)[0] if "." in relation.target_field else None
             key_columns.add(source_identifier)
-            target_source = next((candidate for candidate in metadata if candidate["id"] == relation.target_datasource), None)
+            target_source = next(
+                (candidate for candidate in metadata if candidate["id"] == relation.target_datasource),
+                None,
+            )
             if target_source is None:
                 continue
             for target_table in target_source["tables"]:
@@ -1323,42 +1298,87 @@ class DirectAnswerMixin:
                 target_display = self._infer_display_column(target_table)
                 if target_identifier in target_columns and target_display:
                     lookup_candidates.append(
-                        (source_identifier, target_source, target_table, target_identifier, target_display)
+                        (
+                            source_identifier,
+                            target_source,
+                            target_table,
+                            target_identifier,
+                            target_display,
+                        )
                     )
 
         lookups: list[tuple[str, list[str], dict[str, Any], dict[str, Any], str, str]] = []
         seen_lookups: set[tuple[str, str, str, str]] = set()
-        for identifier_column, candidate, table, target_identifier, display_column in lookup_candidates:
-            identifiers = list(
-                dict.fromkeys(str(row[identifier_column]) for row in rows if row.get(identifier_column) is not None)
-            )[:100]
+        for (
+            identifier_column,
+            candidate,
+            table,
+            target_identifier,
+            display_column,
+        ) in lookup_candidates:
+            identifiers = list(dict.fromkeys(str(row[identifier_column]) for row in rows if row.get(identifier_column) is not None))[:100]
             identity = (identifier_column, candidate["id"], table["name"], target_identifier)
             if identifiers and identity not in seen_lookups:
                 seen_lookups.add(identity)
-                lookups.append((identifier_column, identifiers, candidate, table, target_identifier, display_column))
+                lookups.append(
+                    (
+                        identifier_column,
+                        identifiers,
+                        candidate,
+                        table,
+                        target_identifier,
+                        display_column,
+                    )
+                )
         if not lookups:
             return self._redact_internal_identifier_columns(rows, key_columns), [], 0, []
 
         enriched_rows = rows
         steps: list[InvestigationStep] = []
         resolved_entities: list[ResolvedEntityReference] = []
-        for lookup_index, (identifier_column, identifiers, catalogue, lookup_table, target_identifier, display_column) in enumerate(lookups):
+        for lookup_index, (
+            identifier_column,
+            identifiers,
+            catalogue,
+            lookup_table,
+            target_identifier,
+            display_column,
+        ) in enumerate(lookups):
             quoted_identifiers = ", ".join("'" + value.replace("'", "''") + "'" for value in identifiers)
             name_query = validate_query_tables(
                 validate_read_query(
-                    f"SELECT {target_identifier}, {display_column} FROM {lookup_table['name']} "
-                    f"WHERE {target_identifier} IN ({quoted_identifiers})"
+                    f"SELECT {target_identifier}, {display_column} FROM {lookup_table['name']} WHERE {target_identifier} IN ({quoted_identifiers})"
                 ),
                 {table["name"] for table in catalogue["tables"]},
             )
-            await self._emit(state, "QueryStarted", "Matching selected records to readable names.", datasource_id=catalogue["id"])
+            await self._emit(
+                state,
+                "QueryStarted",
+                "Matching selected records to readable names.",
+                datasource_id=catalogue["id"],
+            )
             try:
                 name_rows = await self.registry.get(catalogue["id"]).execute_read_query(name_query)
             except (ProgrammingError, UnsafeQueryError) as exc:
-                logger.warning("Display-name lookup failed; redacting the internal reference: datasource=%s error=%s", catalogue["id"], exc)
-                await self._emit(state, "QueryRejected", "A name lookup was unavailable, so its internal references were removed.", datasource_id=catalogue["id"])
+                logger.warning(
+                    "Display-name lookup failed; redacting the internal reference: datasource=%s error=%s",
+                    catalogue["id"],
+                    exc,
+                )
+                await self._emit(
+                    state,
+                    "QueryRejected",
+                    "A name lookup was unavailable, so its internal references were removed.",
+                    datasource_id=catalogue["id"],
+                )
                 continue
-            await self._emit(state, "QueryCompleted", "Readable names are ready.", datasource_id=catalogue["id"], row_count=len(name_rows))
+            await self._emit(
+                state,
+                "QueryCompleted",
+                "Readable names are ready.",
+                datasource_id=catalogue["id"],
+                row_count=len(name_rows),
+            )
             names = {
                 str(row[target_identifier]): row[display_column]
                 for row in name_rows
@@ -1375,21 +1395,30 @@ class DirectAnswerMixin:
                 else row
                 for row in enriched_rows
             ]
-            steps.append(InvestigationStep(
-                iteration=1,
-                action="Match selected records to readable names.",
-                datasource_id=catalogue["id"],
-                rationale="Make the result understandable without combining databases.",
-                query=name_query,
-            ))
+            steps.append(
+                InvestigationStep(
+                    iteration=1,
+                    action="Match selected records to readable names.",
+                    datasource_id=catalogue["id"],
+                    rationale="Make the result understandable without combining databases.",
+                    query=name_query,
+                )
+            )
             # Retain only the primary resolved entity for a later "this item" follow-up.
             if lookup_index == 0:
                 resolved_entities = [
                     ResolvedEntityReference(
-                        datasource_id=catalogue["id"], table=lookup_table["name"],
-                        identifier_field=target_identifier, identifier=identifier,
+                        datasource_id=catalogue["id"],
+                        table=lookup_table["name"],
+                        identifier_field=target_identifier,
+                        identifier=identifier,
                         display_name=self._customer_facing_name(name, identifier),
                     )
                     for identifier, name in names.items()
                 ]
-        return self._redact_internal_identifier_columns(enriched_rows, key_columns), steps, len(steps), resolved_entities
+        return (
+            self._redact_internal_identifier_columns(enriched_rows, key_columns),
+            steps,
+            len(steps),
+            resolved_entities,
+        )

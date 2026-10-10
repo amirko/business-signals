@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -11,10 +11,10 @@ from business_signals.config import settings
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
-class DatasourceType(str, Enum):
+class DatasourceType(StrEnum):
     POSTGRESQL = "postgresql"
     TIMESCALEDB = "timescaledb"
 
@@ -123,7 +123,7 @@ class ScopeCoverage(BaseModel):
     limited: bool = False
 
 
-class HypothesisStatus(str, Enum):
+class HypothesisStatus(StrEnum):
     ACTIVE = "active"
     WEAKENED = "weakened"
     REJECTED = "rejected"
@@ -250,14 +250,14 @@ class ExternalFinding(BaseModel):
     # before the language model ranks the provider's results.
     candidate_subject_match_required: bool = False
     significance: Literal["major", "minor", "none"] = "none"
-    candidate_rankings: list["ExternalResearchCandidateRanking"] = Field(default_factory=list, max_length=50)
-    measurements: list["ExternalMeasurement"] = Field(default_factory=list)
+    candidate_rankings: list[ExternalResearchCandidateRanking] = Field(default_factory=list, max_length=50)
+    measurements: list[ExternalMeasurement] = Field(default_factory=list)
     coverage_method: str | None = None
     point_count: int | None = Field(default=None, ge=1)
     # Candidate documents are retained only for research agents configured to
     # use relevance selection. They show what the provider returned without
     # treating its first hit as evidence.
-    candidates: list["ExternalResearchCandidate"] = Field(default_factory=list, max_length=50)
+    candidates: list[ExternalResearchCandidate] = Field(default_factory=list, max_length=50)
 
 
 class ExternalResearchCandidate(BaseModel):
@@ -310,7 +310,7 @@ class HumanFeedback(BaseModel):
     received_at: datetime = Field(default_factory=now_utc)
 
 
-class InvestigationStatus(str, Enum):
+class InvestigationStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     WAITING_FOR_HUMAN = "waiting_for_human"
@@ -445,9 +445,7 @@ class InvestigationState(BaseModel):
     pending_step: InvestigationStep | None = None
     request_type: Literal["investigation", "direct_answer"] = "investigation"
     pending_human_question: str | None = None
-    human_resume_node: Literal[
-        "generate_hypotheses", "validate_premise", "answer_directly", "select_investigation"
-    ] | None = None
+    human_resume_node: Literal["generate_hypotheses", "validate_premise", "answer_directly", "select_investigation"] | None = None
     human_feedback: list[HumanFeedback] = Field(default_factory=list)
     # Time spent waiting for the user is not investigation runtime and must not consume its budget.
     paused_at: datetime | None = None

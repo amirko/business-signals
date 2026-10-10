@@ -72,17 +72,13 @@ class ExternalResearchCoordinator:
                 continue
             selected_ids = set(hypothesis.external_agent_ids)
             if not selected_ids:
-                hypothesis_topics = {
-                    str(topic).strip().casefold() for topic in hypothesis.evidence_topics if str(topic).strip()
-                }
+                hypothesis_topics = {str(topic).strip().casefold() for topic in hypothesis.evidence_topics if str(topic).strip()}
                 selected_ids = {
                     str(agent["id"])
                     for agent in agents
-                    if hypothesis_topics.intersection({
-                        str(topic).strip().casefold()
-                        for topic in agent.get("evidence_topics", [])
-                        if str(topic).strip()
-                    })
+                    if hypothesis_topics.intersection(
+                        {str(topic).strip().casefold() for topic in agent.get("evidence_topics", []) if str(topic).strip()}
+                    )
                 }
             if not selected_ids:
                 continue
@@ -97,9 +93,7 @@ class ExternalResearchCoordinator:
                 eligible[hypothesis.id] = matching
         return eligible
 
-    def has_eligible_check(
-        self, state: InvestigationState, available_agents: list[dict[str, Any]] | None = None
-    ) -> bool:
+    def has_eligible_check(self, state: InvestigationState, available_agents: list[dict[str, Any]] | None = None) -> bool:
         return bool(self.eligible_agents_by_hypothesis(state, available_agents))
 
     @staticmethod
@@ -136,9 +130,7 @@ class ExternalResearchCoordinator:
         }
 
     @staticmethod
-    def _legacy_executed_agents(
-        state: InvestigationState, available_agents: list[dict[str, Any]]
-    ) -> set[tuple[str, str]]:
+    def _legacy_executed_agents(state: InvestigationState, available_agents: list[dict[str, Any]]) -> set[tuple[str, str]]:
         """Avoid repeating agent calls in archives created before request keys existed."""
         completed: set[tuple[str, str]] = set()
         for agent in available_agents:
@@ -187,18 +179,11 @@ class ExternalResearchCoordinator:
             # guard. It is deliberately based on its configured subject, not
             # an agent name: a result must name at least one supplied place
             # component before the model is allowed to assess its impact.
-            subject_terms = [
-                term.strip().casefold()
-                for term in str(request["subject"]).split(",")
-                if len(term.strip()) >= 3
-            ]
+            subject_terms = [term.strip().casefold() for term in str(request["subject"]).split(",") if len(term.strip()) >= 3]
             candidates = [
                 candidate
                 for candidate in candidates
-                if any(
-                    term in f"{candidate.title} {candidate.summary or ''}".casefold()
-                    for term in subject_terms
-                )
+                if any(term in f"{candidate.title} {candidate.summary or ''}".casefold() for term in subject_terms)
             ]
             if not candidates:
                 logger.info(
@@ -277,7 +262,10 @@ class ExternalResearchCoordinator:
                 plans.append(plan)
                 continue
             try:
-                start, boundary = date.fromisoformat(plan.start_date), date.fromisoformat(plan.comparison_start_date)
+                start, boundary = (
+                    date.fromisoformat(plan.start_date),
+                    date.fromisoformat(plan.comparison_start_date),
+                )
             except ValueError:
                 plans.append(plan)
                 continue
@@ -291,7 +279,10 @@ class ExternalResearchCoordinator:
                 )
                 plans.append(
                     plan.model_copy(
-                        update={"start_date": boundary.isoformat(), "comparison_start_date": start.isoformat()}
+                        update={
+                            "start_date": boundary.isoformat(),
+                            "comparison_start_date": start.isoformat(),
+                        }
                     )
                 )
             else:
@@ -300,15 +291,10 @@ class ExternalResearchCoordinator:
 
     async def select(self, state: InvestigationState) -> dict[str, Any]:
         available_agents = self.available_agents()
-        if not available_agents or (
-            not settings.ignore_investigation_limits
-            and state.external_call_count >= state.limits.max_external_calls
-        ):
+        if not available_agents or (not settings.ignore_investigation_limits and state.external_call_count >= state.limits.max_external_calls):
             return {"external_request": None, "next_action": "continue"}
         eligible_by_hypothesis = self.eligible_agents_by_hypothesis(state, available_agents)
-        external_hypotheses = [
-            hypothesis for hypothesis in state.hypotheses if hypothesis.id in eligible_by_hypothesis
-        ]
+        external_hypotheses = [hypothesis for hypothesis in state.hypotheses if hypothesis.id in eligible_by_hypothesis]
         if not external_hypotheses:
             logger.warning("External research was selected without an externally testable hypothesis")
             return {"external_request": None, "next_action": "continue"}
@@ -319,27 +305,18 @@ class ExternalResearchCoordinator:
         # through evidence assessment before the next agent is selected, so a
         # concurrent batch cannot leave all but its final observation detached
         # from the hypothesis that requested it.
-        maximum_checks = (
-            1
-            if settings.ignore_investigation_limits
-            else min(1, state.limits.max_external_calls - state.external_call_count)
-        )
+        maximum_checks = 1 if settings.ignore_investigation_limits else min(1, state.limits.max_external_calls - state.external_call_count)
         result = await self.llm.structured(
             ExternalResearchPlans,
             prompts.load("external_research_plan"),
             {
                 **self._state_payload(state),
                 "available_research_agents": available_agents,
-                "eligible_external_hypotheses": [
-                    hypothesis.model_dump(mode="json") for hypothesis in external_hypotheses
-                ],
+                "eligible_external_hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in external_hypotheses],
                 "eligible_external_agents_by_hypothesis": {
-                    hypothesis.name: eligible_by_hypothesis[hypothesis.id]
-                    for hypothesis in external_hypotheses
+                    hypothesis.name: eligible_by_hypothesis[hypothesis.id] for hypothesis in external_hypotheses
                 },
-                "completed_external_checks": [
-                    check.model_dump(mode="json") for check in state.external_research_checks
-                ],
+                "completed_external_checks": [check.model_dump(mode="json") for check in state.external_research_checks],
                 "maximum_checks": maximum_checks,
             },
         )
@@ -355,14 +332,17 @@ class ExternalResearchCoordinator:
                 return False
             if (hypothesis_id, plan.agent_id) in legacy_executed_agents:
                 return False
-            return self._request_key(
-                hypothesis_id,
-                plan.agent_id,
-                plan.subject,
-                plan.start_date,
-                plan.end_date,
-                plan.comparison_start_date,
-            ) not in recorded_request_keys
+            return (
+                self._request_key(
+                    hypothesis_id,
+                    plan.agent_id,
+                    plan.subject,
+                    plan.start_date,
+                    plan.end_date,
+                    plan.comparison_start_date,
+                )
+                not in recorded_request_keys
+            )
 
         def has_valid_agent_input(plan: Any) -> bool:
             validator = getattr(self.researcher, "validate_request", None)
@@ -393,10 +373,7 @@ class ExternalResearchCoordinator:
                     plan.agent_id in available_ids
                     and plan.hypothesis_name.casefold() in valid_hypothesis_names
                     and resolved_hypothesis_id(plan) is not None
-                    and plan.agent_id in {
-                        str(agent["id"])
-                        for agent in eligible_by_hypothesis.get(resolved_hypothesis_id(plan) or "", [])
-                    }
+                    and plan.agent_id in {str(agent["id"]) for agent in eligible_by_hypothesis.get(resolved_hypothesis_id(plan) or "", [])}
                     and has_valid_agent_input(plan)
                     and is_new_request(plan)
                     for plan in plans
@@ -413,26 +390,20 @@ class ExternalResearchCoordinator:
                     "available_research_agents": available_agents,
                     "valid_hypothesis_names": [hypothesis.name for hypothesis in external_hypotheses],
                     "eligible_external_agents_by_hypothesis": {
-                        hypothesis.name: eligible_by_hypothesis[hypothesis.id]
-                        for hypothesis in external_hypotheses
+                        hypothesis.name: eligible_by_hypothesis[hypothesis.id] for hypothesis in external_hypotheses
                     },
                     "maximum_checks": maximum_checks,
-                    "completed_external_checks": [
-                        check.model_dump(mode="json") for check in state.external_research_checks
-                    ],
+                    "completed_external_checks": [check.model_dump(mode="json") for check in state.external_research_checks],
                 },
             )
             result = self._normalize_comparison_windows(result)
         if not valid(result.plans):
             repeated_hypothesis_ids = {
-                hypothesis_id
-                for plan in result.plans
-                if (hypothesis_id := resolved_hypothesis_id(plan)) is not None and not is_new_request(plan)
+                hypothesis_id for plan in result.plans if (hypothesis_id := resolved_hypothesis_id(plan)) is not None and not is_new_request(plan)
             }
             if repeated_hypothesis_ids:
                 logger.warning(
-                    "External-research planner repeated completed checks; continuing without duplicates: "
-                    "investigation=%s hypotheses=%s",
+                    "External-research planner repeated completed checks; continuing without duplicates: investigation=%s hypotheses=%s",
                     state.investigation_id,
                     sorted(repeated_hypothesis_ids),
                 )
@@ -492,7 +463,11 @@ class ExternalResearchCoordinator:
                 agent_id=plan.agent_id,
                 hypothesis_id=hypothesis_id,
             )
-        return {"external_request": requests, "current_focus": requests[0]["hypothesis_id"], "next_action": None}
+        return {
+            "external_request": requests,
+            "current_focus": requests[0]["hypothesis_id"],
+            "next_action": None,
+        }
 
     async def execute(self, state: InvestigationState) -> dict[str, Any]:
         raw_requests = state.external_request
@@ -535,9 +510,7 @@ class ExternalResearchCoordinator:
             # historical lookup. A comparison boundary is an opt-in extension for
             # agents that expose a time series.
             if request.get("comparison_start_date"):
-                finding = await self.researcher.research(
-                    *research_args, request["comparison_start_date"]
-                )
+                finding = await self.researcher.research(*research_args, request["comparison_start_date"])
             else:
                 finding = await self.researcher.research(*research_args)
             finding = await self._select_relevant_finding(state, request, finding)
@@ -604,9 +577,7 @@ class ExternalResearchCoordinator:
                 failed_hypothesis_ids.append(request["hypothesis_id"])
                 checks.append(self._check_from_request(request, "unavailable"))
                 diagnostic = self._safe_failure_diagnostic(request["agent_id"], result)
-                failed_external_checks.append(
-                    {"hypothesis_id": request["hypothesis_id"], "diagnostic": diagnostic}
-                )
+                failed_external_checks.append({"hypothesis_id": request["hypothesis_id"], "diagnostic": diagnostic})
                 await self._emit(
                     state,
                     "ExternalResearchUnavailable",

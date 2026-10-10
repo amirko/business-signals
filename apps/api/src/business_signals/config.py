@@ -50,4 +50,5 @@ class Settings(BaseSettings):
     investigation_store_dir: Path = Path(".business-signals/investigations")
     research_agent_catalog_path: Path = Path("config/research-agents.json")
 
+
 settings = Settings()

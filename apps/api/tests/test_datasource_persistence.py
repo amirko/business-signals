@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from business_signals.datasources.registry import DatasourceRegistry
 from business_signals.models import (
     ColumnMetadata,
@@ -94,7 +93,9 @@ async def test_delete_removes_persisted_connection_and_schema(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_approved_cross_datasource_relation_survives_restart_and_is_removed_with_connection(tmp_path: Path) -> None:
+async def test_approved_cross_datasource_relation_survives_restart_and_is_removed_with_connection(
+    tmp_path: Path,
+) -> None:
     store_path = tmp_path / "datasources.json"
     registry = PersistedFixtureRegistry(store_path)
     first = await registry.add(fixture_config())

@@ -57,14 +57,14 @@ def test_selected_follow_up_option_becomes_a_meaningful_next_request() -> None:
         "or (C) accept a best-effort estimate using session-level metrics?"
     )
 
-    assert InvestigationService._follow_up_request(question, "C") == (
-        "accept a best-effort estimate using session-level metrics"
-    )
+    assert InvestigationService._follow_up_request(question, "C") == ("accept a best-effort estimate using session-level metrics")
     assert InvestigationService._follow_up_request(question, "A.") == "inspect transaction records"
     assert InvestigationService._follow_up_request(question, "Ask about stores") == "Ask about stores"
 
 
-def test_archive_restores_question_answers_hypotheses_evidence_and_conclusion(tmp_path: Path) -> None:
+def test_archive_restores_question_answers_hypotheses_evidence_and_conclusion(
+    tmp_path: Path,
+) -> None:
     archive_dir = tmp_path / "investigations"
     registry = DatasourceRegistry(store_path=tmp_path / "datasources.json")
     service = InvestigationService(registry, archive_dir=archive_dir)
@@ -81,7 +81,7 @@ def test_archive_restores_question_answers_hypotheses_evidence_and_conclusion(tm
     assert restored.evidence[0].id == "ev_inventory"
     assert restored.final_analysis and restored.final_analysis.summary == "Inventory is the strongest explanation."
     assert (archive_dir / "inv_saved.json").stat().st_mode & 0o777 == 0o600
-    assert "\n  \"question\":" in (archive_dir / "inv_saved.json").read_text(encoding="utf-8")
+    assert '\n  "question":' in (archive_dir / "inv_saved.json").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -103,8 +103,13 @@ async def test_archive_can_delete_one_or_all_saved_investigations(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_deleting_a_conversation_deletes_its_persistent_checkpoint_first(tmp_path: Path) -> None:
-    service = InvestigationService(DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations")
+async def test_deleting_a_conversation_deletes_its_persistent_checkpoint_first(
+    tmp_path: Path,
+) -> None:
+    service = InvestigationService(
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"),
+        archive_dir=tmp_path / "investigations",
+    )
     state = build_state("inv_checkpointed")
     service._records[state.investigation_id] = state
     service._save_archive(state)
@@ -122,25 +127,23 @@ async def test_deleting_a_conversation_deletes_its_persistent_checkpoint_first(t
 
 
 @pytest.mark.asyncio
-async def test_negative_direct_answer_follow_up_ends_and_persists_the_session(tmp_path: Path) -> None:
+async def test_negative_direct_answer_follow_up_ends_and_persists_the_session(
+    tmp_path: Path,
+) -> None:
     archive_dir = tmp_path / "investigations"
     service = InvestigationService(DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=archive_dir)
     state = build_state("inv_direct_done").model_copy(
         update={
             "request_type": "direct_answer",
             "status": InvestigationStatus.COMPLETED,
-            "final_analysis": build_state("inv_direct_done").final_analysis.model_copy(
-                update={"follow_up_question": "Would you like more detail?"}
-            ),
+            "final_analysis": build_state("inv_direct_done").final_analysis.model_copy(update={"follow_up_question": "Would you like more detail?"}),
         }
     )
     service._records[state.investigation_id] = state
     service._save_archive(state)
 
     completed = await service.follow_up(state.investigation_id, "No thanks")
-    restored = InvestigationService(
-        DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=archive_dir
-    ).get(state.investigation_id)
+    restored = InvestigationService(DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=archive_dir).get(state.investigation_id)
 
     assert completed.status == InvestigationStatus.COMPLETED
     assert completed.final_analysis and completed.final_analysis.follow_up_question is None
@@ -148,8 +151,13 @@ async def test_negative_direct_answer_follow_up_ends_and_persists_the_session(tm
 
 
 @pytest.mark.asyncio
-async def test_completed_investigation_can_continue_without_losing_prior_context(tmp_path: Path) -> None:
-    service = InvestigationService(DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations")
+async def test_completed_investigation_can_continue_without_losing_prior_context(
+    tmp_path: Path,
+) -> None:
+    service = InvestigationService(
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"),
+        archive_dir=tmp_path / "investigations",
+    )
     state = build_state("inv_root_done").model_copy(update={"status": InvestigationStatus.COMPLETED})
     service._records[state.investigation_id] = state
     service._save_archive(state)
@@ -178,7 +186,8 @@ async def test_completed_investigation_can_continue_without_losing_prior_context
 @pytest.mark.asyncio
 async def test_clarification_resumes_the_follow_up_checkpoint_thread(tmp_path: Path) -> None:
     service = InvestigationService(
-        DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations"
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"),
+        archive_dir=tmp_path / "investigations",
     )
     state = build_state("inv_follow_up_waiting").model_copy(
         update={
@@ -201,9 +210,12 @@ async def test_clarification_resumes_the_follow_up_checkpoint_thread(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_skipping_a_clarification_starts_a_fresh_context_preserving_turn(tmp_path: Path) -> None:
+async def test_skipping_a_clarification_starts_a_fresh_context_preserving_turn(
+    tmp_path: Path,
+) -> None:
     service = InvestigationService(
-        DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations"
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"),
+        archive_dir=tmp_path / "investigations",
     )
     state = build_state("inv_skip_clarification").model_copy(
         update={
@@ -234,8 +246,13 @@ async def test_skipping_a_clarification_starts_a_fresh_context_preserving_turn(t
     assert calls[0][1] and calls[0][1] != state.checkpoint_thread_id
 
 
-def test_legacy_follow_up_uses_the_original_question_as_its_conversation_name(tmp_path: Path) -> None:
-    service = InvestigationService(DatasourceRegistry(store_path=tmp_path / "datasources.json"), archive_dir=tmp_path / "investigations")
+def test_legacy_follow_up_uses_the_original_question_as_its_conversation_name(
+    tmp_path: Path,
+) -> None:
+    service = InvestigationService(
+        DatasourceRegistry(store_path=tmp_path / "datasources.json"),
+        archive_dir=tmp_path / "investigations",
+    )
     legacy = InvestigationState(
         investigation_id="inv_legacy",
         question="Follow-up request: Show sales by store\n\nEarlier answer context: What is the most valuable item?",

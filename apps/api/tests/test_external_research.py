@@ -2,12 +2,15 @@ import asyncio
 
 import pytest
 from business_signals.investigation.external_research import ExternalResearchCoordinator
-from business_signals.llm import ExternalResearchPlan, ExternalResearchPlans, ExternalResearchRelevance
+from business_signals.llm import (
+    ExternalResearchPlan,
+    ExternalResearchPlans,
+    ExternalResearchRelevance,
+)
 from business_signals.models import (
     ExternalFinding,
     ExternalResearchCandidate,
     ExternalResearchCandidateRanking,
-    HypothesisStatus,
     InvestigationState,
     InvestigationStep,
 )
@@ -15,11 +18,15 @@ from business_signals.models import (
 
 class ExternalResearchFixture:
     def available_agents(self) -> list[dict[str, object]]:
-        return [{"id": "weather", "name": "Historical weather", "evidence_topics": ["weather.conditions"]}]
+        return [
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "evidence_topics": ["weather.conditions"],
+            }
+        ]
 
-    async def research(
-        self, agent_id: str, subject: str, start_date: str, end_date: str, context: str
-    ) -> ExternalFinding:
+    async def research(self, agent_id: str, subject: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         assert (agent_id, subject, start_date, end_date, context) == (
             "weather",
             "Milan",
@@ -40,17 +47,31 @@ class ExternalResearchFixture:
 
 class ExternalResearchPlanningLLM:
     async def structured(
-        self, response_model: type[ExternalResearchPlans], instruction: str, payload: dict[str, object]
+        self,
+        response_model: type[ExternalResearchPlans],
+        instruction: str,
+        payload: dict[str, object],
     ) -> ExternalResearchPlans:
         assert response_model is ExternalResearchPlans
         assert payload["available_research_agents"] == [
-            {"id": "weather", "name": "Historical weather", "evidence_topics": ["weather.conditions"]}
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "evidence_topics": ["weather.conditions"],
+            }
         ]
-        return ExternalResearchPlans(plans=[ExternalResearchPlan(
-            hypothesis_name="Weather disruption", agent_id="weather", subject="Milan",
-            start_date="2024-07-01", end_date="2024-07-31",
-            rationale="Check whether weather could have affected visits to outdoor-product stores.",
-        )])
+        return ExternalResearchPlans(
+            plans=[
+                ExternalResearchPlan(
+                    hypothesis_name="Weather disruption",
+                    agent_id="weather",
+                    subject="Milan",
+                    start_date="2024-07-01",
+                    end_date="2024-07-31",
+                    rationale="Check whether weather could have affected visits to outdoor-product stores.",
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -99,9 +120,7 @@ async def test_external_research_coordinator_selects_and_records_a_bounded_check
 
 
 class UnavailableResearchFixture(ExternalResearchFixture):
-    async def research(
-        self, agent_id: str, subject: str, start_date: str, end_date: str, context: str
-    ) -> ExternalFinding:
+    async def research(self, agent_id: str, subject: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         raise RuntimeError("provider timeout")
 
 
@@ -109,9 +128,7 @@ class NewsCandidatesFixture:
     def available_agents(self) -> list[dict[str, object]]:
         return [{"id": "guardian-news", "name": "Historic news", "evidence_topics": ["public.events"]}]
 
-    async def research(
-        self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str
-    ) -> ExternalFinding:
+    async def research(self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str) -> ExternalFinding:
         return ExternalFinding(
             type="guardian-news",
             period=f"{start_date} to {end_date}",
@@ -165,15 +182,17 @@ async def test_external_research_omits_provider_candidates_that_do_not_bear_on_t
         investigation_id="inv_irrelevant_news",
         question="Why did store revenue fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_events",
-            "name": "Local closures",
-            "description": "A local closure reduced access to stores.",
-            "category": "external",
-            "research_scope": "external",
-            "evidence_topics": ["public.events"],
-            "confidence": 0.2,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_events",
+                "name": "Local closures",
+                "description": "A local closure reduced access to stores.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["public.events"],
+                "confidence": 0.2,
+            }
+        ],
         external_request={
             "agent_id": "guardian-news",
             "hypothesis_id": "hyp_events",
@@ -196,9 +215,7 @@ class MajorNewsFixture:
     def available_agents(self) -> list[dict[str, object]]:
         return [{"id": "guardian-news", "name": "Historic news", "evidence_topics": ["public.events"]}]
 
-    async def research(
-        self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str
-    ) -> ExternalFinding:
+    async def research(self, _agent_id: str, _subject: str, start_date: str, end_date: str, _context: str) -> ExternalFinding:
         return ExternalFinding(
             type="guardian-news",
             period=f"{start_date} to {end_date}",
@@ -232,11 +249,13 @@ class MajorNewsRankingLLM:
             candidate_index=0,
             relevance="relevant",
             significance="major",
-            rankings=[ExternalResearchCandidateRanking(
-                candidate_index=0,
-                significance="major",
-                rationale="It identifies a Dubai conflict impact on travel and visitor activity.",
-            )],
+            rankings=[
+                ExternalResearchCandidateRanking(
+                    candidate_index=0,
+                    significance="major",
+                    rationale="It identifies a Dubai conflict impact on travel and visitor activity.",
+                )
+            ],
             confidence=0.91,
             rationale="This is a major, location-specific disruption consistent with lower foot traffic.",
         )
@@ -258,13 +277,23 @@ async def test_news_ranking_rejects_nonlocal_articles_and_keeps_a_major_local_ev
         investigation_id="inv_major_news",
         question="Why did Dubai sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_events", "name": "Local disruption", "description": "A disruption reduced visits.",
-            "category": "external", "research_scope": "external", "confidence": 0.3,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_events",
+                "name": "Local disruption",
+                "description": "A disruption reduced visits.",
+                "category": "external",
+                "research_scope": "external",
+                "confidence": 0.3,
+            }
+        ],
         external_request={
-            "agent_id": "guardian-news", "hypothesis_id": "hyp_events", "subject": "Dubai, United Arab Emirates",
-            "start_date": "2026-03-01", "end_date": "2026-03-31", "rationale": "Check local disruptions.",
+            "agent_id": "guardian-news",
+            "hypothesis_id": "hyp_events",
+            "subject": "Dubai, United Arab Emirates",
+            "start_date": "2026-03-01",
+            "end_date": "2026-03-31",
+            "rationale": "Check local disruptions.",
         },
     )
 
@@ -284,13 +313,19 @@ class ParallelResearchFixture:
 
     def available_agents(self) -> list[dict[str, object]]:
         return [
-            {"id": "weather", "name": "Historical weather", "evidence_topics": ["weather.conditions"]},
-            {"id": "guardian-news", "name": "Historic news and events (Guardian)", "evidence_topics": ["public.events"]},
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "evidence_topics": ["weather.conditions"],
+            },
+            {
+                "id": "guardian-news",
+                "name": "Historic news and events (Guardian)",
+                "evidence_topics": ["public.events"],
+            },
         ]
 
-    async def research(
-        self, agent_id: str, subject: str, start_date: str, end_date: str, context: str
-    ) -> ExternalFinding:
+    async def research(self, agent_id: str, subject: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
         self.active += 1
         self.maximum_active = max(self.maximum_active, self.active)
         await asyncio.sleep(0)
@@ -315,12 +350,18 @@ class SequentialResearchPlanningLLM:
         assert payload["maximum_checks"] == 1
         agent_id = "weather" if self.calls == 0 else "guardian-news"
         self.calls += 1
-        return ExternalResearchPlans(plans=[
-            ExternalResearchPlan(
-                hypothesis_name="External conditions", agent_id=agent_id, subject="Milan",
-                start_date="2024-07-01", end_date="2024-07-31", rationale="Check local weather.",
-            ),
-        ])
+        return ExternalResearchPlans(
+            plans=[
+                ExternalResearchPlan(
+                    hypothesis_name="External conditions",
+                    agent_id=agent_id,
+                    subject="Milan",
+                    start_date="2024-07-01",
+                    end_date="2024-07-31",
+                    rationale="Check local weather.",
+                ),
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -341,10 +382,17 @@ async def test_external_research_runs_one_check_per_selection_so_each_result_can
         investigation_id="inv_parallel_external",
         question="Why did sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_external", "name": "External conditions", "description": "Outside factors affected demand.",
-            "category": "external", "research_scope": "external", "evidence_topics": ["weather.conditions", "public.events"], "confidence": 0.2,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_external",
+                "name": "External conditions",
+                "description": "Outside factors affected demand.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions", "public.events"],
+                "confidence": 0.2,
+            }
+        ],
         hypothesis_name_index={"external conditions": "hyp_external"},
     )
 
@@ -354,19 +402,26 @@ async def test_external_research_runs_one_check_per_selection_so_each_result_can
     completed = await coordinator.execute(state.model_copy(update={**first_completed, **second_selected}))
 
     assert completed["external_call_count"] == 2
-    assert [finding.type for finding in completed["external_findings"]] == ["weather", "guardian-news"]
+    assert [finding.type for finding in completed["external_findings"]] == [
+        "weather",
+        "guardian-news",
+    ]
     assert researcher.maximum_active == 1
 
 
 def test_external_agents_are_selected_by_semantic_evidence_topics() -> None:
     """A weather mechanism cannot accidentally invoke the FX connector."""
     coordinator = ExternalResearchCoordinator(
-        researcher=type("Researcher", (), {
-            "available_agents": lambda _self: [
-                {"id": "weather", "name": "Weather", "evidence_topics": ["weather.conditions"]},
-                {"id": "economy-fx", "name": "FX", "evidence_topics": ["currency.exchange"]},
-            ]
-        })(),  # type: ignore[arg-type]
+        researcher=type(
+            "Researcher",
+            (),
+            {
+                "available_agents": lambda _self: [
+                    {"id": "weather", "name": "Weather", "evidence_topics": ["weather.conditions"]},
+                    {"id": "economy-fx", "name": "FX", "evidence_topics": ["currency.exchange"]},
+                ]
+            },
+        )(),  # type: ignore[arg-type]
         llm=ExternalResearchPlanningLLM(),  # type: ignore[arg-type]
         emit=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         state_payload=lambda _state: {},
@@ -439,9 +494,7 @@ async def test_external_research_coordinator_logs_and_contains_provider_failures
 
     assert completed["next_action"] == "continue"
     assert completed["failed_external_hypothesis_ids"] == ["hyp_weather"]
-    assert completed["failed_external_checks"] == [
-        {"hypothesis_id": "hyp_weather", "diagnostic": "weather: RuntimeError"}
-    ]
+    assert completed["failed_external_checks"] == [{"hypothesis_id": "hyp_weather", "diagnostic": "weather: RuntimeError"}]
     assert "External research check failed; continuing with other hypotheses" in caplog.text
     assert "provider timeout" in caplog.text
     assert emitted == ["ExternalResearchStarted", "ExternalResearchUnavailable"]
@@ -464,10 +517,17 @@ async def test_external_research_does_not_repeat_an_identical_completed_request(
         investigation_id="inv_no_duplicate_external_request",
         question="Why did outdoor sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_weather", "name": "Weather disruption", "description": "Weather reduced visits.",
-            "category": "external", "research_scope": "external", "evidence_topics": ["weather.conditions"], "confidence": 0.4,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_weather",
+                "name": "Weather disruption",
+                "description": "Weather reduced visits.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.4,
+            }
+        ],
         hypothesis_name_index={"weather disruption": "hyp_weather"},
     )
 
@@ -498,17 +558,26 @@ async def test_external_research_does_not_repeat_a_legacy_archived_agent_step() 
         investigation_id="inv_legacy_weather_step",
         question="Why did outdoor sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_weather", "name": "Weather disruption", "description": "Weather reduced visits.",
-            "category": "external", "research_scope": "external", "evidence_topics": ["weather.conditions"], "confidence": 0.4,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_weather",
+                "name": "Weather disruption",
+                "description": "Weather reduced visits.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.4,
+            }
+        ],
         hypothesis_name_index={"weather disruption": "hyp_weather"},
-        investigation_history=[InvestigationStep(
-            iteration=1,
-            hypothesis_id="hyp_weather",
-            action="Check historical weather.",
-            rationale="Check weather.",
-        )],
+        investigation_history=[
+            InvestigationStep(
+                iteration=1,
+                hypothesis_id="hyp_weather",
+                action="Check historical weather.",
+                rationale="Check weather.",
+            )
+        ],
     )
 
     selection = await coordinator.select(state)
@@ -521,7 +590,13 @@ class ComparisonBoundaryResearchFixture:
     received: tuple[object, ...] | None = None
 
     def available_agents(self) -> list[dict[str, object]]:
-        return [{"id": "weather", "name": "Historical weather", "evidence_topics": ["weather.conditions"]}]
+        return [
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "evidence_topics": ["weather.conditions"],
+            }
+        ]
 
     async def research(self, *args: object) -> ExternalFinding:
         self.received = args
@@ -538,17 +613,19 @@ class ComparisonBoundaryResearchFixture:
 class ComparisonBoundaryPlanningLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict[str, object]) -> ExternalResearchPlans:
         assert response_model is ExternalResearchPlans
-        return ExternalResearchPlans(plans=[
-            ExternalResearchPlan(
-                hypothesis_name="External conditions",
-                agent_id="weather",
-                subject="Milan, Italy",
-                start_date="2024-06-01",
-                end_date="2024-07-31",
-                comparison_start_date="2024-07-01",
-                rationale="Compare conditions before and after the sales change.",
-            )
-        ])
+        return ExternalResearchPlans(
+            plans=[
+                ExternalResearchPlan(
+                    hypothesis_name="External conditions",
+                    agent_id="weather",
+                    subject="Milan, Italy",
+                    start_date="2024-06-01",
+                    end_date="2024-07-31",
+                    comparison_start_date="2024-07-01",
+                    rationale="Compare conditions before and after the sales change.",
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -569,10 +646,17 @@ async def test_external_research_passes_an_explicit_comparison_boundary_to_a_tim
         investigation_id="inv_boundary",
         question="Why did sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_external", "name": "External conditions", "description": "Outside conditions changed demand.",
-            "category": "external", "research_scope": "external", "evidence_topics": ["weather.conditions"], "confidence": 0.2,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_external",
+                "name": "External conditions",
+                "description": "Outside conditions changed demand.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.2,
+            }
+        ],
         hypothesis_name_index={"external conditions": "hyp_external"},
     )
 
@@ -584,18 +668,20 @@ async def test_external_research_passes_an_explicit_comparison_boundary_to_a_tim
 
 
 def test_external_research_normalizes_a_reversed_before_after_window() -> None:
-    result = ExternalResearchPlans(plans=[
-        ExternalResearchPlan(
-            hypothesis_name="Weather",
-            agent_id="weather",
-            subject="Milan, Italy",
-            # This is the invalid shape returned by inv_8c2ec8d531db.
-            start_date="2024-07-01",
-            end_date="2024-07-31",
-            comparison_start_date="2024-06-01",
-            rationale="Compare June and July weather.",
-        )
-    ])
+    result = ExternalResearchPlans(
+        plans=[
+            ExternalResearchPlan(
+                hypothesis_name="Weather",
+                agent_id="weather",
+                subject="Milan, Italy",
+                # This is the invalid shape returned by inv_8c2ec8d531db.
+                start_date="2024-07-01",
+                end_date="2024-07-31",
+                comparison_start_date="2024-06-01",
+                rationale="Compare June and July weather.",
+            )
+        ]
+    )
 
     normalized = ExternalResearchCoordinator._normalize_comparison_windows(result)
 
@@ -607,16 +693,18 @@ def test_external_research_normalizes_a_reversed_before_after_window() -> None:
 class UnfixableExternalPlanLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict[str, object]) -> ExternalResearchPlans:
         assert response_model is ExternalResearchPlans
-        return ExternalResearchPlans(plans=[
-            ExternalResearchPlan(
-                hypothesis_name="External conditions",
-                agent_id="unknown-agent",
-                subject="Milan, Italy",
-                start_date="2024-06-01",
-                end_date="2024-07-31",
-                rationale="An invalid configured agent.",
-            )
-        ])
+        return ExternalResearchPlans(
+            plans=[
+                ExternalResearchPlan(
+                    hypothesis_name="External conditions",
+                    agent_id="unknown-agent",
+                    subject="Milan, Italy",
+                    start_date="2024-06-01",
+                    end_date="2024-07-31",
+                    rationale="An invalid configured agent.",
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio
@@ -635,10 +723,17 @@ async def test_unfixable_external_plan_is_contained_without_crashing_the_investi
         investigation_id="inv_unfixable_external_plan",
         question="Why did sales fall?",
         datasources=[],
-        hypotheses=[{
-            "id": "hyp_external", "name": "External conditions", "description": "Outside conditions changed demand.",
-            "category": "external", "research_scope": "external", "evidence_topics": ["weather.conditions"], "confidence": 0.2,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_external",
+                "name": "External conditions",
+                "description": "Outside conditions changed demand.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.2,
+            }
+        ],
         hypothesis_name_index={"external conditions": "hyp_external"},
     )
 

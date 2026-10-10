@@ -37,12 +37,24 @@ async def test_live_only_event_stream_does_not_replay_a_completed_turn() -> None
     service = InvestigationService(DatasourceRegistry())
     state = InvestigationState(investigation_id="inv_live_stream", question="Why did revenue decline?", datasources=[])
     service._records[state.investigation_id] = state
-    await service._publish(InvestigationEvent(investigation_id=state.investigation_id, type="InvestigationCompleted", message="Old turn"))
+    await service._publish(
+        InvestigationEvent(
+            investigation_id=state.investigation_id,
+            type="InvestigationCompleted",
+            message="Old turn",
+        )
+    )
 
     stream = service.events(state.investigation_id, live_only=True)
     pending = asyncio.create_task(anext(stream))
     await asyncio.sleep(0)
-    await service._publish(InvestigationEvent(investigation_id=state.investigation_id, type="InvestigationCompleted", message="New turn"))
+    await service._publish(
+        InvestigationEvent(
+            investigation_id=state.investigation_id,
+            type="InvestigationCompleted",
+            message="New turn",
+        )
+    )
     received = await pending
     await stream.aclose()
 
@@ -96,9 +108,7 @@ class FailingGraph:
 
 
 @pytest.mark.asyncio
-async def test_investigation_failure_is_logged_but_not_sent_to_client(
-    caplog: pytest.LogCaptureFixture, tmp_path: Path
-) -> None:
+async def test_investigation_failure_is_logged_but_not_sent_to_client(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     service = InvestigationService(DatasourceRegistry(), archive_dir=tmp_path / "investigations")
     state = InvestigationState(
         investigation_id="inv_failure",
@@ -119,7 +129,9 @@ async def test_investigation_failure_is_logged_but_not_sent_to_client(
 
 
 @pytest.mark.asyncio
-async def test_stopping_an_active_investigation_cancels_work_and_preserves_the_archive(tmp_path: Path) -> None:
+async def test_stopping_an_active_investigation_cancels_work_and_preserves_the_archive(
+    tmp_path: Path,
+) -> None:
     service = InvestigationService(DatasourceRegistry(), archive_dir=tmp_path / "investigations")
     state = InvestigationState(
         investigation_id="inv_stop",

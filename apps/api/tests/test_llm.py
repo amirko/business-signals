@@ -64,9 +64,7 @@ class FakeAnthropicClient:
 
 
 @pytest.mark.asyncio
-async def test_gpt_request_uses_structured_output_without_temperature(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_gpt_request_uses_structured_output_without_temperature(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(settings, "ai_api_key", "test-key")
     monkeypatch.setattr(settings, "ai_provider", "openai")
     completions = FakeCompletions()
@@ -86,9 +84,7 @@ async def test_gpt_request_uses_structured_output_without_temperature(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_request_uses_a_forced_schema_tool(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_anthropic_request_uses_a_forced_schema_tool(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     import business_signals.llm as llm_module
 
     monkeypatch.setattr(settings, "ai_api_key", "test-key")
@@ -98,9 +94,7 @@ async def test_anthropic_request_uses_a_forced_schema_tool(
     monkeypatch.setattr(llm_module.httpx, "AsyncClient", lambda **_kwargs: client)
 
     with caplog.at_level(logging.INFO, logger="uvicorn.error"):
-        result = await AnthropicLLM().structured(
-            QuestionUnderstanding, "Understand", {"question": "Why?"}
-        )
+        result = await AnthropicLLM().structured(QuestionUnderstanding, "Understand", {"question": "Why?"})
 
     assert result.observations == ["Sales fell."]
     assert client.request["url"] == "https://api.anthropic.com/v1/messages"
@@ -136,11 +130,7 @@ def test_evidence_assessment_has_a_closed_structured_output_schema() -> None:
 
 
 def test_prompt_catalog_loads_packaged_versioned_instructions() -> None:
-    prompt_names = [
-        resource.stem
-        for resource in files("business_signals.prompts").iterdir()
-        if resource.suffix == ".txt"
-    ]
+    prompt_names = [resource.stem for resource in files("business_signals.prompts").iterdir() if resource.suffix == ".txt"]
     assert prompt_names
     assert all(prompts.load(name) for name in prompt_names)
     assert "plain business language" in prompts.load("system")

@@ -11,7 +11,6 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 ScopeKind = Literal["city", "multiple_locations", "region", "country"]
 
 
@@ -53,7 +52,13 @@ def select_geocoding_candidate(subject: str, candidates: list[dict[str, Any]]) -
             continue
         exact_context_score = len(requested_context & context)
         population = int(candidate.get("population") or 0)
-        scored.append((exact_context_score, population, {**candidate, "latitude": latitude, "longitude": longitude}))
+        scored.append(
+            (
+                exact_context_score,
+                population,
+                {**candidate, "latitude": latitude, "longitude": longitude},
+            )
+        )
     if not scored:
         raise ValueError(f"No geocoding result precisely matched {subject!r}")
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
@@ -93,10 +98,7 @@ def geojson_area_km2(geometry: dict[str, Any]) -> float:
 
     def ring_area(ring: list[list[float]]) -> float:
         projected = [(point[0] * metres_per_degree_lon, point[1] * metres_per_degree_lat) for point in ring]
-        return abs(sum(
-            x1 * y2 - x2 * y1
-            for (x1, y1), (x2, y2) in zip(projected, projected[1:] + projected[:1], strict=True)
-        )) / 2
+        return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(projected, projected[1:] + projected[:1], strict=True))) / 2
 
     area_m2 = 0.0
     for polygon in polygons:
@@ -166,9 +168,9 @@ def _polygons(geometry: dict[str, Any]) -> list[list[list[list[float]]]]:
 
 
 def _contains(polygons: list[list[list[list[float]]]], longitude: float, latitude: float) -> bool:
-    return any(_in_ring(polygon[0], longitude, latitude) and not any(
-        _in_ring(hole, longitude, latitude) for hole in polygon[1:]
-    ) for polygon in polygons)
+    return any(
+        _in_ring(polygon[0], longitude, latitude) and not any(_in_ring(hole, longitude, latitude) for hole in polygon[1:]) for polygon in polygons
+    )
 
 
 def _in_ring(ring: list[list[float]], longitude: float, latitude: float) -> bool:

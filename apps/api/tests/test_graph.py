@@ -111,7 +111,9 @@ async def test_exhausted_hypotheses_synthesize_instead_of_crashing() -> None:
     assert engine._route_after_selection(routed_state) == "synthesize"
 
 
-def test_ignore_investigation_limits_disables_budget_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ignore_investigation_limits_disables_budget_enforcement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine = InvestigationEngine(DatasourceRegistry())
     monkeypatch.setattr(settings, "ignore_investigation_limits", True)
     state = InvestigationState(
@@ -153,10 +155,24 @@ def test_single_related_record_adds_a_scope_caveat_to_the_final_analysis() -> No
 
 class ExternalResearchFixture:
     def available_agents(self) -> list[dict[str, object]]:
-        return [{"id": "weather", "name": "Historical weather", "purpose": "Check conditions", "subjects": ["weather"], "evidence_topics": ["weather.conditions"], "subject_label": "location"}]
+        return [
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "purpose": "Check conditions",
+                "subjects": ["weather"],
+                "evidence_topics": ["weather.conditions"],
+                "subject_label": "location",
+            }
+        ]
 
     async def research(self, agent_id: str, subject: str, start_date: str, end_date: str, context: str) -> ExternalFinding:
-        assert (agent_id, subject, start_date, end_date) == ("weather", "Milan", "2024-07-01", "2024-07-31")
+        assert (agent_id, subject, start_date, end_date) == (
+            "weather",
+            "Milan",
+            "2024-07-01",
+            "2024-07-31",
+        )
         assert context
         return ExternalFinding(
             type="weather",
@@ -186,11 +202,18 @@ class ExternalResearchPlanLLM:
     async def structured(self, response_model, instruction: str, payload: dict):
         assert response_model is ExternalResearchPlans
         assert payload["available_research_agents"][0]["id"] == "weather"
-        return ExternalResearchPlans(plans=[ExternalResearchPlan(
-            hypothesis_name="Weather disruption", agent_id="weather", subject="Milan",
-            start_date="2024-07-01", end_date="2024-07-31",
-            rationale="Check whether weather could have affected visits to outdoor-product stores.",
-        )])
+        return ExternalResearchPlans(
+            plans=[
+                ExternalResearchPlan(
+                    hypothesis_name="Weather disruption",
+                    agent_id="weather",
+                    subject="Milan",
+                    start_date="2024-07-01",
+                    end_date="2024-07-31",
+                    rationale="Check whether weather could have affected visits to outdoor-product stores.",
+                )
+            ]
+        )
 
 
 class ContradictingExternalEvidenceLLM(ExternalResearchPlanLLM):
@@ -252,12 +275,12 @@ async def test_selected_external_agent_runs_as_evidence_and_never_as_a_direct_ca
         hypotheses=[
             {
                 "id": "hyp_weather",
-                    "name": "Weather disruption",
-                    "description": "Weather reduced visits to stores selling outdoor products.",
-                    "category": "external",
-                    "research_scope": "external",
-                    "evidence_topics": ["weather.conditions"],
-                    "confidence": 0.4,
+                "name": "Weather disruption",
+                "description": "Weather reduced visits to stores selling outdoor products.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.4,
             }
         ],
         hypothesis_name_index={"weather disruption": "hyp_weather"},
@@ -292,12 +315,12 @@ async def test_empty_external_result_is_retained_and_can_reject_its_hypothesis()
         hypotheses=[
             {
                 "id": "hyp_weather",
-                    "name": "Weather disruption",
-                    "description": "Weather reduced visits to stores selling outdoor products.",
-                    "category": "external",
-                    "research_scope": "external",
-                    "evidence_topics": ["weather.conditions"],
-                    "confidence": 0.4,
+                "name": "Weather disruption",
+                "description": "Weather reduced visits to stores selling outdoor products.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.4,
             }
         ],
         hypothesis_name_index={"weather disruption": "hyp_weather"},
@@ -465,15 +488,17 @@ async def test_relevant_external_research_runs_after_the_internal_runtime_budget
         datasources=[],
         started_at=datetime.now(UTC) - timedelta(minutes=5),
         query_count=1,
-        hypotheses=[{
-            "id": "hyp_weather",
-            "name": "Weather disruption",
-            "description": "Weather may have reduced store visits.",
-            "category": "external",
-            "research_scope": "external",
-            "evidence_topics": ["weather.conditions"],
-            "confidence": 0.35,
-        }],
+        hypotheses=[
+            {
+                "id": "hyp_weather",
+                "name": "Weather disruption",
+                "description": "Weather may have reduced store visits.",
+                "category": "external",
+                "research_scope": "external",
+                "evidence_topics": ["weather.conditions"],
+                "confidence": 0.35,
+            }
+        ],
     )
     engine = InvestigationEngine(
         DatasourceRegistry(),
@@ -493,10 +518,25 @@ def test_hypothesis_name_resolves_to_the_graph_hypothesis_id() -> None:
             "question": "Why did revenue fall?",
             "datasources": [],
             "hypotheses": [
-                {"id": "hyp_inventory", "name": "Inventory availability", "description": "Inventory fell", "category": "inventory", "confidence": 0.5},
-                {"id": "hyp_demand", "name": "Reduced demand", "description": "Demand fell", "category": "demand", "confidence": 0.4},
+                {
+                    "id": "hyp_inventory",
+                    "name": "Inventory availability",
+                    "description": "Inventory fell",
+                    "category": "inventory",
+                    "confidence": 0.5,
+                },
+                {
+                    "id": "hyp_demand",
+                    "name": "Reduced demand",
+                    "description": "Demand fell",
+                    "category": "demand",
+                    "confidence": 0.4,
+                },
             ],
-            "hypothesis_name_index": {"inventory availability": "hyp_inventory", "reduced demand": "hyp_demand"},
+            "hypothesis_name_index": {
+                "inventory availability": "hyp_inventory",
+                "reduced demand": "hyp_demand",
+            },
         }
     )
 
@@ -507,7 +547,16 @@ def test_hypothesis_name_resolves_to_the_graph_hypothesis_id() -> None:
 
 def test_direct_answer_guardrail_removes_internal_identifier_columns() -> None:
     rows = InvestigationEngine._redact_internal_identifier_columns(
-        [{"item_code": "P003", "store_id": "S17", "external_key": "x", "sku": "hub-3", "display_name": "Charging Hub", "units": 732}],
+        [
+            {
+                "item_code": "P003",
+                "store_id": "S17",
+                "external_key": "x",
+                "sku": "hub-3",
+                "display_name": "Charging Hub",
+                "units": 732,
+            }
+        ],
         {"item_code", "store_id", "external_key", "sku"},
     )
 
@@ -535,15 +584,16 @@ def test_direct_answer_combination_supports_composite_group_keys() -> None:
     fields = InvestigationEngine._combination_fields("store_id, channel")
 
     assert fields == ["store_id", "channel"]
-    assert InvestigationEngine._combination_row_key(
-        {"store_id": "S01", "channel": "online"}, fields
-    ) == ("S01", "online")
+    assert InvestigationEngine._combination_row_key({"store_id": "S01", "channel": "online"}, fields) == ("S01", "online")
 
 
 def test_direct_answer_guardrail_removes_redundant_catalog_labels_and_retained_keys() -> None:
     entity = ResolvedEntityReference(
-        datasource_id="catalog", table="public.products", identifier_field="id",
-        identifier="P119", display_name="Toiletry Bag",
+        datasource_id="catalog",
+        table="public.products",
+        identifier_field="id",
+        identifier="P119",
+        display_name="Toiletry Bag",
     )
     rows = InvestigationEngine._remove_redundant_entity_labels(
         [{"name": "Toiletry Bag 119", "display_name": "Toiletry Bag", "units_sold": 88}], [entity]
@@ -552,11 +602,18 @@ def test_direct_answer_guardrail_removes_redundant_catalog_labels_and_retained_k
         FinalAnalysis(
             likely_root_cause="Sales for Toiletry Bag 119 (Toiletry Bag)",
             confidence=0.9,
-            evidence=[Evidence(
-                description="P119 sold 88 units.", source="sales records", relationship="direct", confidence=0.9,
-                data=[EvidenceDataPoint(field="Product", value="Toiletry Bag 119")],
-            )],
-            rejected_hypotheses=[], external_findings=[], caveats=["P119 is the retained key."],
+            evidence=[
+                Evidence(
+                    description="P119 sold 88 units.",
+                    source="sales records",
+                    relationship="direct",
+                    confidence=0.9,
+                    data=[EvidenceDataPoint(field="Product", value="Toiletry Bag 119")],
+                )
+            ],
+            rejected_hypotheses=[],
+            external_findings=[],
+            caveats=["P119 is the retained key."],
             summary="Toiletry Bag 119 (Toiletry Bag) sold 88 units.",
         ),
         [entity],
@@ -608,7 +665,16 @@ async def test_schema_driven_lookup_resolves_a_non_product_identifier_column() -
     registry = GenericLookupRegistry()
     engine = InvestigationEngine(registry)  # type: ignore[arg-type]
     metadata = [
-        {"id": "analytics", "tables": [{"name": "public.sales", "columns": [{"name": "item_code", "pk": False}], "foreign_keys": []}]},
+        {
+            "id": "analytics",
+            "tables": [
+                {
+                    "name": "public.sales",
+                    "columns": [{"name": "item_code", "pk": False}],
+                    "foreign_keys": [],
+                }
+            ],
+        },
         {
             "id": "catalog",
             "tables": [
@@ -619,9 +685,12 @@ async def test_schema_driven_lookup_resolves_a_non_product_identifier_column() -
                 },
                 {
                     "name": "public.items",
-                    "columns": [{"name": "item_code", "pk": True}, {"name": "catalog_caption", "type": "text", "pk": False, "nullable": False}],
+                    "columns": [
+                        {"name": "item_code", "pk": True},
+                        {"name": "catalog_caption", "type": "text", "pk": False, "nullable": False},
+                    ],
                     "foreign_keys": [],
-                }
+                },
             ],
         },
     ]
@@ -653,8 +722,29 @@ async def test_failed_display_name_lookup_redacts_schema_declared_identifiers() 
     registry.sources["catalog"].execute_read_query = reject_lookup  # type: ignore[method-assign]
     engine = InvestigationEngine(registry)  # type: ignore[arg-type]
     metadata = [
-        {"id": "analytics", "tables": [{"name": "public.sales", "columns": [{"name": "item_code", "pk": False}], "foreign_keys": []}]},
-        {"id": "catalog", "tables": [{"name": "public.items", "columns": [{"name": "item_code", "pk": True}, {"name": "display_name", "pk": False}], "foreign_keys": []}]},
+        {
+            "id": "analytics",
+            "tables": [
+                {
+                    "name": "public.sales",
+                    "columns": [{"name": "item_code", "pk": False}],
+                    "foreign_keys": [],
+                }
+            ],
+        },
+        {
+            "id": "catalog",
+            "tables": [
+                {
+                    "name": "public.items",
+                    "columns": [
+                        {"name": "item_code", "pk": True},
+                        {"name": "display_name", "pk": False},
+                    ],
+                    "foreign_keys": [],
+                }
+            ],
+        },
     ]
 
     resolved, step, query_count, _ = await engine._resolve_display_names(
@@ -678,7 +768,10 @@ class FakeDatasource:
 
     async def execute_read_query(self, query: str) -> list[dict[str, object]]:
         self.queries.append(query)
-        return [{"region": "north", "revenue": 80, "available_units": 4}, {"region": "north", "revenue": 40, "available_units": 2}]
+        return [
+            {"region": "north", "revenue": 80, "available_units": 4},
+            {"region": "north", "revenue": 40, "available_units": 2},
+        ]
 
 
 class FakeRegistry:
@@ -823,11 +916,18 @@ class CategoricalVocabularyRegistry(VocabularyRegistry):
 class VocabularyClarificationLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict):
         assert response_model is QuestionUnderstanding
-        return QuestionUnderstanding.model_validate({
-            "metric_definition": {"name": "Units sold", "expression": "SUM(units)", "unit": "units", "confidence": 0.9},
-            "scope": {"filters": ["outdoor-product"]},
-            "ambiguity": "When you say 'outdoor-product', do you mean a stored group or a custom list?",
-        })
+        return QuestionUnderstanding.model_validate(
+            {
+                "metric_definition": {
+                    "name": "Units sold",
+                    "expression": "SUM(units)",
+                    "unit": "units",
+                    "confidence": 0.9,
+                },
+                "scope": {"filters": ["outdoor-product"]},
+                "ambiguity": "When you say 'outdoor-product', do you mean a stored group or a custom list?",
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -844,9 +944,7 @@ async def test_question_understanding_resolves_a_quoted_term_from_any_text_dimen
 
     assert update["pending_human_question"] is None
     assert update["analysis_scope"].filters[-1] == "The term “outdoor-product” is represented by “Outdoor” in the connected data."
-    assert registry.source.queries == [
-        'SELECT DISTINCT "descriptor" AS value FROM "public"."lookup_a" WHERE "descriptor" IS NOT NULL LIMIT 51'
-    ]
+    assert registry.source.queries == ['SELECT DISTINCT "descriptor" AS value FROM "public"."lookup_a" WHERE "descriptor" IS NOT NULL LIMIT 51']
 
 
 @pytest.mark.asyncio
@@ -871,17 +969,19 @@ async def test_categorical_vocabulary_is_loaded_once_per_schema_version() -> Non
 class MeasureFirstClarificationLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict):
         assert response_model is QuestionUnderstanding
-        return QuestionUnderstanding.model_validate({
-            "metric_definition": {
-                "name": "Sales",
-                "expression": "The requested business measure",
-                "unit": None,
-                "confidence": 0.45,
-            },
-            "scope": {"filters": ["outdoor-product"]},
-            "ambiguity": "When you say sales, do you mean the total amount customers spent, the number of items sold, or the number of orders?",
-            "clarification_kind": "measure",
-        })
+        return QuestionUnderstanding.model_validate(
+            {
+                "metric_definition": {
+                    "name": "Sales",
+                    "expression": "The requested business measure",
+                    "unit": None,
+                    "confidence": 0.45,
+                },
+                "scope": {"filters": ["outdoor-product"]},
+                "ambiguity": "When you say sales, do you mean the total amount customers spent, the number of items sold, or the number of orders?",
+                "clarification_kind": "measure",
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -906,16 +1006,18 @@ async def test_measure_clarification_is_not_discarded_when_a_catalog_term_is_inf
 class LowConfidenceMeasureWithoutQuestionLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict):
         assert response_model is QuestionUnderstanding
-        return QuestionUnderstanding.model_validate({
-            "metric_definition": {
-                "name": "Physical-store revenue",
-                "expression": "Total amount paid in physical stores",
-                "unit": "local currency",
-                "confidence": 0.7,
-            },
-            "scope": {"filters": ["Dubai"]},
-            "premise_to_validate": "Physical-store revenue declined in the later period.",
-        })
+        return QuestionUnderstanding.model_validate(
+            {
+                "metric_definition": {
+                    "name": "Physical-store revenue",
+                    "expression": "Total amount paid in physical stores",
+                    "unit": "local currency",
+                    "confidence": 0.7,
+                },
+                "scope": {"filters": ["Dubai"]},
+                "premise_to_validate": "Physical-store revenue declined in the later period.",
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -931,8 +1033,7 @@ async def test_low_confidence_measure_without_model_question_requests_clarificat
     update = await engine._understand(state)
 
     assert update["pending_human_question"] == (
-        "How should I define \u201cPhysical-store revenue\u201d for this analysis? "
-        "Please say what it should include or exclude."
+        "How should I define \u201cPhysical-store revenue\u201d for this analysis? Please say what it should include or exclude."
     )
     assert update["human_resume_node"] == "validate_premise"
     assert update["status"] == InvestigationStatus.WAITING_FOR_HUMAN
@@ -959,12 +1060,31 @@ class SetComparisonRegistry:
         )
         self.metadata_values = {
             "catalog": DatasourceMetadata(
-                datasource_id="catalog", type=DatasourceType.POSTGRESQL, fingerprint="catalog",
-                structural_metadata=[TableMetadata(schema_name="public", name="items", columns=[ColumnMetadata(name="id", data_type="text", nullable=False, primary_key=True), ColumnMetadata(name="display_name", data_type="text", nullable=False)])],
+                datasource_id="catalog",
+                type=DatasourceType.POSTGRESQL,
+                fingerprint="catalog",
+                structural_metadata=[
+                    TableMetadata(
+                        schema_name="public",
+                        name="items",
+                        columns=[
+                            ColumnMetadata(name="id", data_type="text", nullable=False, primary_key=True),
+                            ColumnMetadata(name="display_name", data_type="text", nullable=False),
+                        ],
+                    )
+                ],
             ),
             "analytics": DatasourceMetadata(
-                datasource_id="analytics", type=DatasourceType.POSTGRESQL, fingerprint="analytics",
-                structural_metadata=[TableMetadata(schema_name="public", name="sales", columns=[ColumnMetadata(name="item_id", data_type="text", nullable=False)])],
+                datasource_id="analytics",
+                type=DatasourceType.POSTGRESQL,
+                fingerprint="analytics",
+                structural_metadata=[
+                    TableMetadata(
+                        schema_name="public",
+                        name="sales",
+                        columns=[ColumnMetadata(name="item_id", data_type="text", nullable=False)],
+                    )
+                ],
             ),
         }
 
@@ -1000,19 +1120,43 @@ class RelationFilterDatasource:
 class RelationFilterRegistry:
     def __init__(self) -> None:
         self.catalog = RelationFilterDatasource(
-            DatasourceSummary(id="catalog", name="Catalog", type=DatasourceType.POSTGRESQL, connected=True), "catalog"
+            DatasourceSummary(id="catalog", name="Catalog", type=DatasourceType.POSTGRESQL, connected=True),
+            "catalog",
         )
         self.analytics = RelationFilterDatasource(
-            DatasourceSummary(id="analytics", name="Analytics", type=DatasourceType.POSTGRESQL, connected=True), "analytics"
+            DatasourceSummary(id="analytics", name="Analytics", type=DatasourceType.POSTGRESQL, connected=True),
+            "analytics",
         )
         self.metadata_values = {
             "catalog": DatasourceMetadata(
-                datasource_id="catalog", type=DatasourceType.POSTGRESQL, fingerprint="catalog",
-                structural_metadata=[TableMetadata(schema_name="public", name="products", columns=[ColumnMetadata(name="id", data_type="text", nullable=False, primary_key=True), ColumnMetadata(name="name", data_type="text", nullable=False)])],
+                datasource_id="catalog",
+                type=DatasourceType.POSTGRESQL,
+                fingerprint="catalog",
+                structural_metadata=[
+                    TableMetadata(
+                        schema_name="public",
+                        name="products",
+                        columns=[
+                            ColumnMetadata(name="id", data_type="text", nullable=False, primary_key=True),
+                            ColumnMetadata(name="name", data_type="text", nullable=False),
+                        ],
+                    )
+                ],
             ),
             "analytics": DatasourceMetadata(
-                datasource_id="analytics", type=DatasourceType.POSTGRESQL, fingerprint="analytics",
-                structural_metadata=[TableMetadata(schema_name="public", name="sales_events", columns=[ColumnMetadata(name="item_id", data_type="text", nullable=False), ColumnMetadata(name="units", data_type="integer", nullable=False)])],
+                datasource_id="analytics",
+                type=DatasourceType.POSTGRESQL,
+                fingerprint="analytics",
+                structural_metadata=[
+                    TableMetadata(
+                        schema_name="public",
+                        name="sales_events",
+                        columns=[
+                            ColumnMetadata(name="item_id", data_type="text", nullable=False),
+                            ColumnMetadata(name="units", data_type="integer", nullable=False),
+                        ],
+                    )
+                ],
             ),
         }
 
@@ -1023,30 +1167,125 @@ class RelationFilterRegistry:
         return {"catalog": self.catalog, "analytics": self.analytics}[datasource_id]
 
     def approved_cross_relations(self, datasource_ids: list[str]) -> list[CrossDatasourceRelation]:
-        return [CrossDatasourceRelation(
-            id="rel_item", source_datasource="analytics", source_field="public.sales_events.item_id",
-            target_datasource="catalog", target_field="public.products.id", confidence=1,
-            origin="human", confirmed=True,
-        )]
+        return [
+            CrossDatasourceRelation(
+                id="rel_item",
+                source_datasource="analytics",
+                source_field="public.sales_events.item_id",
+                target_datasource="catalog",
+                target_field="public.products.id",
+                confidence=1,
+                origin="human",
+                confirmed=True,
+            )
+        ]
 
 
 class FixtureLLM:
     async def structured(self, response_model, instruction: str, payload: dict):
         responses = {
-            QuestionUnderstanding: {"metric_definition": {"name": "revenue", "expression": "SUM(revenue)", "unit": "EUR", "confidence": 0.95}, "observations": ["Northern revenue declined"], "premise_to_validate": "Revenue was lower in the later period than in the earlier period."},
-            HypothesisPlan: {"hypotheses": [
-                {"id": "hyp_stock", "name": "Inventory constraint", "description": "Stock availability constrained sales", "category": "inventory", "confidence": 0.45},
-                {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.35},
-            ]},
-            InvestigationPlan: {"step": {"iteration": 0, "hypothesis_name": "Inventory constraint", "action": "compare revenue and stock", "datasource_id": "analytics", "rationale": "Tests supply before demand", "expected_information_gain": 0.9}},
-            PremiseValidationPlan: {"datasource_id": "analytics", "action": "Compare revenue before and after.", "rationale": "Verify the reported revenue change before explaining it."},
-            QueryPlan: {"sql": "select region, revenue, available_units from sales_events", "purpose": "Measure revenue beside stock availability"},
-            EvidenceAssessment: {"evidence": [{"id": "ev_stock", "description": "Low available units coincide with lower revenue", "source": "analytics", "relationship": "direct", "confidence": 0.86, "hypothesis_ids": ["hyp_stock"]}], "hypotheses": [
-                {"id": "hyp_stock", "name": "Inventory constraint", "description": "Stock availability constrained sales", "category": "inventory", "confidence": 0.86, "status": "supported"},
-                {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.12, "status": "rejected"},
-            ], "confidence": 0.86, "premise_verdict": "confirmed"},
-            InvestigationDecision: {"action": "finish", "reason": "The fixture scenario has sufficient direct evidence."},
-            Synthesis: {"analysis": {"likely_root_cause": "Stock availability constrained sales", "confidence": 0.86, "evidence": [{"id": "ev_stock", "description": "Low available units coincide with lower revenue", "source": "analytics", "relationship": "direct", "confidence": 0.86}], "rejected_hypotheses": [], "external_findings": [], "caveats": [], "summary": "Inventory is the leading explanation."}},
+            QuestionUnderstanding: {
+                "metric_definition": {
+                    "name": "revenue",
+                    "expression": "SUM(revenue)",
+                    "unit": "EUR",
+                    "confidence": 0.95,
+                },
+                "observations": ["Northern revenue declined"],
+                "premise_to_validate": "Revenue was lower in the later period than in the earlier period.",
+            },
+            HypothesisPlan: {
+                "hypotheses": [
+                    {
+                        "id": "hyp_stock",
+                        "name": "Inventory constraint",
+                        "description": "Stock availability constrained sales",
+                        "category": "inventory",
+                        "confidence": 0.45,
+                    },
+                    {
+                        "id": "hyp_demand",
+                        "name": "Demand decline",
+                        "description": "Demand declined",
+                        "category": "demand",
+                        "confidence": 0.35,
+                    },
+                ]
+            },
+            InvestigationPlan: {
+                "step": {
+                    "iteration": 0,
+                    "hypothesis_name": "Inventory constraint",
+                    "action": "compare revenue and stock",
+                    "datasource_id": "analytics",
+                    "rationale": "Tests supply before demand",
+                    "expected_information_gain": 0.9,
+                }
+            },
+            PremiseValidationPlan: {
+                "datasource_id": "analytics",
+                "action": "Compare revenue before and after.",
+                "rationale": "Verify the reported revenue change before explaining it.",
+            },
+            QueryPlan: {
+                "sql": "select region, revenue, available_units from sales_events",
+                "purpose": "Measure revenue beside stock availability",
+            },
+            EvidenceAssessment: {
+                "evidence": [
+                    {
+                        "id": "ev_stock",
+                        "description": "Low available units coincide with lower revenue",
+                        "source": "analytics",
+                        "relationship": "direct",
+                        "confidence": 0.86,
+                        "hypothesis_ids": ["hyp_stock"],
+                    }
+                ],
+                "hypotheses": [
+                    {
+                        "id": "hyp_stock",
+                        "name": "Inventory constraint",
+                        "description": "Stock availability constrained sales",
+                        "category": "inventory",
+                        "confidence": 0.86,
+                        "status": "supported",
+                    },
+                    {
+                        "id": "hyp_demand",
+                        "name": "Demand decline",
+                        "description": "Demand declined",
+                        "category": "demand",
+                        "confidence": 0.12,
+                        "status": "rejected",
+                    },
+                ],
+                "confidence": 0.86,
+                "premise_verdict": "confirmed",
+            },
+            InvestigationDecision: {
+                "action": "finish",
+                "reason": "The fixture scenario has sufficient direct evidence.",
+            },
+            Synthesis: {
+                "analysis": {
+                    "likely_root_cause": "Stock availability constrained sales",
+                    "confidence": 0.86,
+                    "evidence": [
+                        {
+                            "id": "ev_stock",
+                            "description": "Low available units coincide with lower revenue",
+                            "source": "analytics",
+                            "relationship": "direct",
+                            "confidence": 0.86,
+                        }
+                    ],
+                    "rejected_hypotheses": [],
+                    "external_findings": [],
+                    "caveats": [],
+                    "summary": "Inventory is the leading explanation.",
+                }
+            },
         }
         return response_model.model_validate(responses[response_model])
 
@@ -1064,43 +1303,53 @@ class InternalOnlyHistoricalHypothesisLLM:
                 "subject_label": "location",
             }
         ]
-        return HypothesisPlan.model_validate({"hypotheses": [
+        return HypothesisPlan.model_validate(
             {
-                "id": "hyp_inventory",
-                "name": "Inventory limitation",
-                "description": "The store did not have enough items available.",
-                "category": "supply",
-                "research_scope": "internal",
-                "confidence": 0.4,
+                "hypotheses": [
+                    {
+                        "id": "hyp_inventory",
+                        "name": "Inventory limitation",
+                        "description": "The store did not have enough items available.",
+                        "category": "supply",
+                        "research_scope": "internal",
+                        "confidence": 0.4,
+                    }
+                ]
             }
-        ]})
+        )
 
 
 class PrematurelyExhaustedHypothesisLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict):
         assert response_model is HypothesisPlan
-        return HypothesisPlan.model_validate({"hypotheses": [
+        return HypothesisPlan.model_validate(
             {
-                "id": "hyp_inventory",
-                "name": "Inventory limitation",
-                "description": "The store may not have had enough items available.",
-                "category": "supply",
-                "confidence": 0.4,
-                "status": "needs_more_evidence",
+                "hypotheses": [
+                    {
+                        "id": "hyp_inventory",
+                        "name": "Inventory limitation",
+                        "description": "The store may not have had enough items available.",
+                        "category": "supply",
+                        "confidence": 0.4,
+                        "status": "needs_more_evidence",
+                    }
+                ]
             }
-        ]})
+        )
 
 
 class HistoricalWeatherResearcher:
     def available_agents(self) -> list[dict[str, object]]:
-        return [{
-            "id": "weather",
-            "name": "Historical weather",
-            "purpose": "Check historical conditions.",
-            "subjects": ["weather", "rain"],
-            "evidence_topics": ["weather.conditions"],
-            "subject_label": "location",
-        }]
+        return [
+            {
+                "id": "weather",
+                "name": "Historical weather",
+                "purpose": "Check historical conditions.",
+                "subjects": ["weather", "rain"],
+                "evidence_topics": ["weather.conditions"],
+                "subject_label": "location",
+            }
+        ]
 
 
 @pytest.mark.asyncio
@@ -1126,9 +1375,7 @@ async def test_historical_decline_does_not_attach_an_arbitrary_configured_agent(
 async def test_new_hypotheses_are_active_even_if_the_planner_prejudges_them() -> None:
     engine = InvestigationEngine(DatasourceRegistry(), llm=PrematurelyExhaustedHypothesisLLM())
 
-    update = await engine._generate_hypotheses(
-        InvestigationState(investigation_id="inv_new_active", question="Why did sales fall?", datasources=[])
-    )
+    update = await engine._generate_hypotheses(InvestigationState(investigation_id="inv_new_active", question="Why did sales fall?", datasources=[]))
 
     assert update["hypotheses"][0].status == HypothesisStatus.ACTIVE
 
@@ -1185,24 +1432,35 @@ class RejectedPremiseLLM(FixtureLLM):
 
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model is QuestionUnderstanding:
-            return QuestionUnderstanding.model_validate({
-                "metric_definition": {"name": "Units sold", "expression": "Total items sold", "unit": "units", "confidence": 0.95},
-                "premise_to_validate": "Outdoor-product unit sales in Milan were higher in July 2024 than in June 2024.",
-            })
+            return QuestionUnderstanding.model_validate(
+                {
+                    "metric_definition": {
+                        "name": "Units sold",
+                        "expression": "Total items sold",
+                        "unit": "units",
+                        "confidence": 0.95,
+                    },
+                    "premise_to_validate": "Outdoor-product unit sales in Milan were higher in July 2024 than in June 2024.",
+                }
+            )
         if response_model is EvidenceAssessment:
-            return EvidenceAssessment.model_validate({
-                "evidence": [{
-                    "id": "baseline_rejected",
-                    "description": "The baseline comparison shows fewer units sold in July than in June.",
-                    "source": "analytics",
-                    "relationship": "direct",
+            return EvidenceAssessment.model_validate(
+                {
+                    "evidence": [
+                        {
+                            "id": "baseline_rejected",
+                            "description": "The baseline comparison shows fewer units sold in July than in June.",
+                            "source": "analytics",
+                            "relationship": "direct",
+                            "confidence": 0.95,
+                            "scope": "premise",
+                        }
+                    ],
+                    "hypotheses": [],
                     "confidence": 0.95,
-                    "scope": "premise",
-                }],
-                "hypotheses": [],
-                "confidence": 0.95,
-                "premise_verdict": "rejected",
-            })
+                    "premise_verdict": "rejected",
+                }
+            )
         if response_model is HypothesisPlan:
             self.hypothesis_plan_calls += 1
             raise AssertionError("Hypotheses must not be generated before the premise is validated")
@@ -1239,9 +1497,7 @@ class LateAmbiguousFixtureLLM(FixtureLLM):
         if response_model is EvidenceAssessment:
             self.evidence_calls += 1
             if self.evidence_calls == 1:
-                return result.model_copy(
-                    update={"ambiguity": "Which historical dates should be compared?"}
-                )
+                return result.model_copy(update={"ambiguity": "Which historical dates should be compared?"})
         return result
 
 
@@ -1325,26 +1581,52 @@ class InvalidDatasourceDirectAnswerLLM(DirectAnswerFixtureLLM):
 class SetDifferenceDirectAnswerLLM(DirectAnswerFixtureLLM):
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model is DirectAnswerPlan:
-            return DirectAnswerPlan.model_validate({
-                "datasource_id": "catalog",
-                "sql": "SELECT id FROM public.items",
-                "purpose": "List all catalog items.",
-                "supporting_queries": [{"datasource_id": "analytics", "sql": "SELECT DISTINCT item_id FROM public.sales", "purpose": "List items with recorded sales."}],
-                "combination": {"operation": "set_difference", "primary_key": "id", "supporting_query_index": 0, "supporting_key": "item_id"},
-            })
+            return DirectAnswerPlan.model_validate(
+                {
+                    "datasource_id": "catalog",
+                    "sql": "SELECT id FROM public.items",
+                    "purpose": "List all catalog items.",
+                    "supporting_queries": [
+                        {
+                            "datasource_id": "analytics",
+                            "sql": "SELECT DISTINCT item_id FROM public.sales",
+                            "purpose": "List items with recorded sales.",
+                        }
+                    ],
+                    "combination": {
+                        "operation": "set_difference",
+                        "primary_key": "id",
+                        "supporting_query_index": 0,
+                        "supporting_key": "item_id",
+                    },
+                }
+            )
         return await super().structured(response_model, instruction, payload)
 
 
 class RelationFilterDirectAnswerLLM(DirectAnswerFixtureLLM):
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model is DirectAnswerPlan:
-            return DirectAnswerPlan.model_validate({
-                "datasource_id": "analytics",
-                "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id ORDER BY units_sold DESC LIMIT 500",
-                "purpose": "Show daily sales for the selected item.",
-                "supporting_queries": [{"datasource_id": "catalog", "sql": "SELECT id AS product_id FROM public.products WHERE name = 'Lantern'", "purpose": "Find Lantern."}],
-                "combination": {"operation": "intersection", "primary_key": "item_id", "supporting_query_index": 0, "supporting_key": "product_id"},
-            })
+            return DirectAnswerPlan.model_validate(
+                {
+                    "datasource_id": "analytics",
+                    "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id ORDER BY units_sold DESC LIMIT 500",
+                    "purpose": "Show daily sales for the selected item.",
+                    "supporting_queries": [
+                        {
+                            "datasource_id": "catalog",
+                            "sql": "SELECT id AS product_id FROM public.products WHERE name = 'Lantern'",
+                            "purpose": "Find Lantern.",
+                        }
+                    ],
+                    "combination": {
+                        "operation": "intersection",
+                        "primary_key": "item_id",
+                        "supporting_query_index": 0,
+                        "supporting_key": "product_id",
+                    },
+                }
+            )
         return await super().structured(response_model, instruction, payload)
 
 
@@ -1352,23 +1634,27 @@ class CrossDatasourceInvestigationLLM:
     async def structured(self, response_model, instruction: str, payload: dict):
         assert response_model is QueryPlan
         assert payload["selected_datasource"]["id"] == "analytics"
-        return QueryPlan.model_validate({
-            "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id",
-            "purpose": "Measure sales for the selected catalog items.",
-            "contract": {
-                "claim_id": "hypothesis",
-                "role": "causal",
-                "basis": "direct",
-                "relationship_ids": ["rel_item"],
-                "rationale": "The approved relationship supplies the selected catalog items.",
-            },
-            "cross_datasource_lookups": [{
-                "datasource_id": "catalog",
-                "relation_id": "rel_item",
-                "sql": "SELECT id AS relationship_key FROM public.products WHERE name = 'Lantern'",
-                "purpose": "Find the selected catalog item.",
-            }],
-        })
+        return QueryPlan.model_validate(
+            {
+                "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id",
+                "purpose": "Measure sales for the selected catalog items.",
+                "contract": {
+                    "claim_id": "hypothesis",
+                    "role": "causal",
+                    "basis": "direct",
+                    "relationship_ids": ["rel_item"],
+                    "rationale": "The approved relationship supplies the selected catalog items.",
+                },
+                "cross_datasource_lookups": [
+                    {
+                        "datasource_id": "catalog",
+                        "relation_id": "rel_item",
+                        "sql": "SELECT id AS relationship_key FROM public.products WHERE name = 'Lantern'",
+                        "purpose": "Find the selected catalog item.",
+                    }
+                ],
+            }
+        )
 
 
 def test_cross_datasource_lookup_aliases_are_rejected_in_primary_sql() -> None:
@@ -1445,9 +1731,7 @@ async def test_cross_datasource_lookup_rejects_mixed_keys_before_querying_the_re
             "id": source_id,
             "tables": [
                 {"name": f"public.{table_name}", "columns": [], "foreign_keys": []}
-                for table_name in (
-                    ["sales_events"] if source_id == "analytics" else ["products", "stores"]
-                )
+                for table_name in (["sales_events"] if source_id == "analytics" else ["products", "stores"])
             ],
         }
         for source_id in ("analytics", "catalog")
@@ -1477,40 +1761,54 @@ async def test_cross_datasource_lookup_rejects_mixed_keys_before_querying_the_re
 class AgentAssignmentReviewLLM:
     async def structured(self, response_model, _instruction: str, _payload: dict):
         if response_model is HypothesisPlan:
-            return HypothesisPlan.model_validate({"hypotheses": [{
-                "id": "hyp_external",
-                "name": "An external explanation",
-                "description": "An external factor could have changed the outcome.",
-                "category": "generic",
-                "research_scope": "external",
-                "external_agent_ids": ["unrelated-agent"],
-                "claim": {
-                    "cause": "An external factor",
-                    "mechanism": "could change the outcome",
-                    "outcome": "the reported change",
-                    "required_evidence": ["A matching external observation."],
-                },
-                "confidence": 0.3,
-            }]})
+            return HypothesisPlan.model_validate(
+                {
+                    "hypotheses": [
+                        {
+                            "id": "hyp_external",
+                            "name": "An external explanation",
+                            "description": "An external factor could have changed the outcome.",
+                            "category": "generic",
+                            "research_scope": "external",
+                            "external_agent_ids": ["unrelated-agent"],
+                            "claim": {
+                                "cause": "An external factor",
+                                "mechanism": "could change the outcome",
+                                "outcome": "the reported change",
+                                "required_evidence": ["A matching external observation."],
+                            },
+                            "confidence": 0.3,
+                        }
+                    ]
+                }
+            )
         assert response_model is ExternalAgentAssignments
-        return ExternalAgentAssignments.model_validate({"assignments": [{
-            "hypothesis_name": "An external explanation",
-            "agent_ids": [],
-            "valid": False,
-            "rationale": "The configured agent cannot test this claim with the available input.",
-        }]})
+        return ExternalAgentAssignments.model_validate(
+            {
+                "assignments": [
+                    {
+                        "hypothesis_name": "An external explanation",
+                        "agent_ids": [],
+                        "valid": False,
+                        "rationale": "The configured agent cannot test this claim with the available input.",
+                    }
+                ]
+            }
+        )
 
 
 class UnrelatedAgentResearcher:
     def available_agents(self) -> list[dict[str, object]]:
-        return [{
-            "id": "unrelated-agent",
-            "name": "Unrelated research",
-            "purpose": "Check an unrelated public signal.",
-            "subjects": ["unrelated"],
-            "subject_label": "subject",
-            "subject_pattern": ".+",
-        }]
+        return [
+            {
+                "id": "unrelated-agent",
+                "name": "Unrelated research",
+                "purpose": "Check an unrelated public signal.",
+                "subjects": ["unrelated"],
+                "subject_label": "subject",
+                "subject_pattern": ".+",
+            }
+        ]
 
 
 @pytest.mark.asyncio
@@ -1522,7 +1820,11 @@ async def test_independent_agent_review_rejects_an_irrelevant_assignment() -> No
     )
 
     update = await engine._generate_hypotheses(
-        InvestigationState(investigation_id="inv_agent_review", question="Why did the measure change?", datasources=[])
+        InvestigationState(
+            investigation_id="inv_agent_review",
+            question="Why did the measure change?",
+            datasources=[],
+        )
     )
 
     hypothesis = update["hypotheses"][0]
@@ -1533,23 +1835,38 @@ async def test_independent_agent_review_rejects_an_irrelevant_assignment() -> No
 class IncorrectIntersectionDirectAnswerLLM(DirectAnswerFixtureLLM):
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model is DirectAnswerPlan:
-            return DirectAnswerPlan.model_validate({
-                "datasource_id": "analytics",
-                "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id ORDER BY units_sold DESC LIMIT 500",
-                "purpose": "Show sales for the retained item.",
-                "supporting_queries": [{"datasource_id": "catalog", "sql": "SELECT id AS unrelated_store_key FROM public.products", "purpose": "Unrelated supporting lookup."}],
-                "combination": {"operation": "intersection", "primary_key": "item_id", "supporting_query_index": 0, "supporting_key": "unrelated_store_key"},
-            })
+            return DirectAnswerPlan.model_validate(
+                {
+                    "datasource_id": "analytics",
+                    "sql": "SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id ORDER BY units_sold DESC LIMIT 500",
+                    "purpose": "Show sales for the retained item.",
+                    "supporting_queries": [
+                        {
+                            "datasource_id": "catalog",
+                            "sql": "SELECT id AS unrelated_store_key FROM public.products",
+                            "purpose": "Unrelated supporting lookup.",
+                        }
+                    ],
+                    "combination": {
+                        "operation": "intersection",
+                        "primary_key": "item_id",
+                        "supporting_query_index": 0,
+                        "supporting_key": "unrelated_store_key",
+                    },
+                }
+            )
         return await super().structured(response_model, instruction, payload)
 
 
 class AmbiguousAllHistoryDirectAnswerLLM(DirectAnswerFixtureLLM):
     async def structured(self, response_model, instruction: str, payload: dict):
         if response_model is QuestionUnderstanding:
-            return QuestionUnderstanding.model_validate({
-                "request_type": "direct_answer",
-                "ambiguity": "Do you mean all time or a particular period?",
-            })
+            return QuestionUnderstanding.model_validate(
+                {
+                    "request_type": "direct_answer",
+                    "ambiguity": "Do you mean all time or a particular period?",
+                }
+            )
         return await super().structured(response_model, instruction, payload)
 
 
@@ -1606,9 +1923,7 @@ async def test_ambiguous_question_interrupts_then_resumes_from_checkpoint() -> N
     assert paused.pending_human_question == "Which region should the investigation use for the comparison?"
     assert paused.human_feedback == []
 
-    completed = InvestigationState.model_validate(
-        await engine.graph.ainvoke(Command(resume="Use northern Italy."), config=config)
-    )
+    completed = InvestigationState.model_validate(await engine.graph.ainvoke(Command(resume="Use northern Italy."), config=config))
     assert completed.status.value == "completed"
     assert completed.pending_human_question is None
     assert completed.human_feedback[0].response == "Use northern Italy."
@@ -1632,9 +1947,7 @@ async def test_clarification_is_collected_before_decline_premise_validation() ->
     assert llm.premise_validation_calls == 0
     assert registry.source.queries == []
 
-    completed = InvestigationState.model_validate(
-        await engine.graph.ainvoke(Command(resume="Use northern Italy."), config=config)
-    )
+    completed = InvestigationState.model_validate(await engine.graph.ainvoke(Command(resume="Use northern Italy."), config=config))
 
     assert completed.status is InvestigationStatus.COMPLETED
     assert llm.premise_validation_calls == 1
@@ -1709,7 +2022,7 @@ async def test_confirmed_premise_generates_hypotheses_only_after_baseline_assess
     baseline_assessment = llm.calls.index(EvidenceAssessment)
     hypothesis_generation = llm.calls.index(HypothesisPlan)
     assert result.premise_status == "confirmed"
-    assert llm.calls[:baseline_assessment + 1] == [
+    assert llm.calls[: baseline_assessment + 1] == [
         QuestionUnderstanding,
         PremiseValidationPlan,
         QueryPlan,
@@ -1754,10 +2067,7 @@ async def test_follow_up_is_classified_from_its_actual_question_not_the_context_
     engine = InvestigationEngine(DatasourceRegistry(), llm=FixtureLLM())
     state = InvestigationState(
         investigation_id="inv_follow_up_routing",
-        question=(
-            "Follow-up request: Why did sales fall in July?\n\n"
-            "Previous conclusion: Sales were lower in July."
-        ),
+        question=("Follow-up request: Why did sales fall in July?\n\nPrevious conclusion: Sales were lower in July."),
         current_conversation_question="Why did sales fall in July?",
         datasources=[],
         request_type="investigation",
@@ -1866,10 +2176,15 @@ def test_direct_answer_binds_a_stored_entity_reference_through_an_approved_relat
         investigation_id="inv_entity_binding",
         question="Show Lantern sales by day.",
         datasources=[registry.analytics.summary, registry.catalog.summary],
-        resolved_entities=[ResolvedEntityReference(
-            datasource_id="catalog", table="public.products", identifier_field="id",
-            identifier="P162", display_name="Lantern",
-        )],
+        resolved_entities=[
+            ResolvedEntityReference(
+                datasource_id="catalog",
+                table="public.products",
+                identifier_field="id",
+                identifier="P162",
+                display_name="Lantern",
+            )
+        ],
     )
 
     sql = engine._bind_trusted_entity_references(
@@ -1892,10 +2207,15 @@ def test_direct_answer_binds_a_stored_entity_name_through_an_approved_relationsh
         investigation_id="inv_entity_name_binding",
         question="Show Lantern sales by store.",
         datasources=[registry.analytics.summary, registry.catalog.summary],
-        resolved_entities=[ResolvedEntityReference(
-            datasource_id="catalog", table="public.products", identifier_field="id",
-            identifier="P162", display_name="Lantern",
-        )],
+        resolved_entities=[
+            ResolvedEntityReference(
+                datasource_id="catalog",
+                table="public.products",
+                identifier_field="id",
+                identifier="P162",
+                display_name="Lantern",
+            )
+        ],
     )
 
     sql = engine._bind_trusted_entity_references(
@@ -1919,10 +2239,15 @@ def test_direct_answer_constrains_an_explicit_entity_follow_up_before_grouping()
         question="Follow-up request: Split by stores and channel.",
         current_conversation_question="Split by stores and channel.",
         datasources=[registry.analytics.summary, registry.catalog.summary],
-        resolved_entities=[ResolvedEntityReference(
-            datasource_id="catalog", table="public.products", identifier_field="id",
-            identifier="P162", display_name="Lantern",
-        )],
+        resolved_entities=[
+            ResolvedEntityReference(
+                datasource_id="catalog",
+                table="public.products",
+                identifier_field="id",
+                identifier="P162",
+                display_name="Lantern",
+            )
+        ],
     )
 
     query = engine._constrain_query_to_referenced_entity(
@@ -1942,8 +2267,7 @@ def test_approved_relation_filter_is_added_inside_a_cte_source_read() -> None:
     engine = InvestigationEngine(RelationFilterRegistry())  # type: ignore[arg-type]
 
     sql = engine._add_relation_filter(
-        "WITH monthly AS (SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id) "
-        "SELECT * FROM monthly",
+        "WITH monthly AS (SELECT item_id, SUM(units) AS units_sold FROM public.sales_events GROUP BY item_id) SELECT * FROM monthly",
         "public.sales_events.item_id",
         ["P162"],
     )
@@ -1960,19 +2284,24 @@ def test_direct_answer_replaces_a_display_label_used_in_a_retained_entity_key_pr
         question="Follow-up request: Show this item by store.",
         current_conversation_question="Show this item by store.",
         datasources=[registry.analytics.summary, registry.catalog.summary],
-        resolved_entities=[ResolvedEntityReference(
-            datasource_id="catalog", table="public.products", identifier_field="id",
-            identifier="P162", display_name="Lantern",
-        )],
+        resolved_entities=[
+            ResolvedEntityReference(
+                datasource_id="catalog",
+                table="public.products",
+                identifier_field="id",
+                identifier="P162",
+                display_name="Lantern",
+            )
+        ],
     )
 
     query = engine._constrain_query_to_referenced_entity(
         state,
         DirectAnswerQuery(
             datasource_id="analytics",
-            sql=("SELECT store_id, SUM(units) FROM public.sales_events "
-                 "WHERE item_id = 'Lantern 162' AND occurred_at >= '2024-07-01' "
-                 "GROUP BY store_id"),
+            sql=(
+                "SELECT store_id, SUM(units) FROM public.sales_events WHERE item_id = 'Lantern 162' AND occurred_at >= '2024-07-01' GROUP BY store_id"
+            ),
             purpose="Show sales by store.",
         ),
     )
@@ -1990,10 +2319,13 @@ def test_direct_answer_inherits_previous_non_entity_scope() -> None:
         question="Follow-up request: Split by stores and channel.",
         current_conversation_question="Split by stores and channel.",
         datasources=[registry.analytics.summary, registry.catalog.summary],
-        query_scopes=[QueryScope(
-            datasource_id="analytics", table="public.sales_events",
-            predicate_sql="occurred_at >= CAST('2024-07-01' AS TIMESTAMPTZ) AND occurred_at < CAST('2024-08-01' AS TIMESTAMPTZ)",
-        )],
+        query_scopes=[
+            QueryScope(
+                datasource_id="analytics",
+                table="public.sales_events",
+                predicate_sql="occurred_at >= CAST('2024-07-01' AS TIMESTAMPTZ) AND occurred_at < CAST('2024-08-01' AS TIMESTAMPTZ)",
+            )
+        ],
     )
 
     query = engine._apply_inherited_scope(
@@ -2022,8 +2354,7 @@ def test_inherited_scope_does_not_narrow_an_explicit_all_population_aggregate() 
                 datasource_id="analytics",
                 table="public.sales_events",
                 predicate_sql=(
-                    "platform = 'iOS' AND occurred_at >= CAST('2024-03-18' AS TIMESTAMPTZ) "
-                    "AND occurred_at < CAST('2024-04-01' AS TIMESTAMPTZ)"
+                    "platform = 'iOS' AND occurred_at >= CAST('2024-03-18' AS TIMESTAMPTZ) AND occurred_at < CAST('2024-04-01' AS TIMESTAMPTZ)"
                 ),
             )
         ],
@@ -2067,10 +2398,7 @@ def test_all_platforms_follow_up_overrides_a_retained_platform_scope() -> None:
     )
     original = DirectAnswerQuery(
         datasource_id="analytics",
-        sql=(
-            "SELECT channel, COUNT(*) AS completed_sales_records FROM public.sales_events "
-            "WHERE payment_status = 'completed' GROUP BY channel"
-        ),
+        sql=("SELECT channel, COUNT(*) AS completed_sales_records FROM public.sales_events WHERE payment_status = 'completed' GROUP BY channel"),
         purpose="Show completed sales records by channel.",
     )
 
@@ -2087,10 +2415,15 @@ async def test_entity_filtered_query_ignores_an_invalid_planner_intersection() -
             question="Follow-up request: Split by stores for this item.",
             current_conversation_question="Split by stores for this item.",
             datasources=[registry.analytics.summary, registry.catalog.summary],
-            resolved_entities=[ResolvedEntityReference(
-                datasource_id="catalog", table="public.products", identifier_field="id",
-                identifier="P162", display_name="Lantern",
-            )],
+            resolved_entities=[
+                ResolvedEntityReference(
+                    datasource_id="catalog",
+                    table="public.products",
+                    identifier_field="id",
+                    identifier="P162",
+                    display_name="Lantern",
+                )
+            ],
         )
     )
 
@@ -2140,31 +2473,35 @@ def test_direct_follow_up_does_not_reask_an_answered_sales_metric() -> None:
         investigation_id="inv_metric_reuse",
         question="Show the sales by store.",
         datasources=[],
-        human_feedback=[HumanFeedback(
-            question="When you say sold, do you mean the number of units customers purchased, the number of orders, or total revenue?",
-            response="Number of units customers purchased.",
-        )],
+        human_feedback=[
+            HumanFeedback(
+                question="When you say sold, do you mean the number of units customers purchased, the number of orders, or total revenue?",
+                response="Number of units customers purchased.",
+            )
+        ],
     )
     engine = InvestigationEngine(DatasourceRegistry())
 
     assert engine._reasks_answered_sales_metric(
-        state, "When you say sales, do you mean the number of units sold or the total amount customers spent (revenue)?"
+        state,
+        "When you say sales, do you mean the number of units sold or the total amount customers spent (revenue)?",
     )
 
 
 def test_only_essential_business_definitions_can_pause_an_investigation() -> None:
     engine = InvestigationEngine(DatasourceRegistry())
-    state = InvestigationState(investigation_id="inv_clarification_policy", question="Why did conversion fall?", datasources=[])
+    state = InvestigationState(
+        investigation_id="inv_clarification_policy",
+        question="Why did conversion fall?",
+        datasources=[],
+    )
 
     assert engine._clarification_to_request(
-        state, "When you say conversion rate, do you mean completed purchases divided by sessions or checkout starts?"
+        state,
+        "When you say conversion rate, do you mean completed purchases divided by sessions or checkout starts?",
     )
-    assert engine._clarification_to_request(
-        state, "Allow me to run a different query or use an alternate data extract."
-    ) is None
-    assert engine._clarification_to_request(
-        state, "Would you like me to widen the date range and try again?"
-    ) is None
+    assert engine._clarification_to_request(state, "Allow me to run a different query or use an alternate data extract.") is None
+    assert engine._clarification_to_request(state, "Would you like me to widen the date range and try again?") is None
     answered = state.model_copy(update={"human_feedback": [HumanFeedback(question="Which period?", response="March")]})
     assert engine._clarification_to_request(answered, "Which region should be compared?") is None
 
@@ -2231,11 +2568,13 @@ async def test_direct_aggregate_without_an_attributable_value_explains_the_data_
         question="What was the total revenue from iOS orders?",
         datasources=[],
         request_type="direct_answer",
-        observations=[Observation(
-            description="Retrieve the requested revenue total.",
-            source="analytics",
-            value={"rows": [{"total_revenue": None}]},
-        )],
+        observations=[
+            Observation(
+                description="Retrieve the requested revenue total.",
+                source="analytics",
+                value={"rows": [{"total_revenue": None}]},
+            )
+        ],
     )
 
     update = await engine._synthesize(state)
@@ -2284,14 +2623,16 @@ async def test_evidence_ambiguity_pauses_then_resumes_with_a_new_investigation_s
     assert paused.status.value == "waiting_for_human"
     assert paused.pending_human_question == "Which historical dates should be compared?"
 
-    completed = InvestigationState.model_validate(
-        await engine.graph.ainvoke(Command(resume="Compare July and August 2024."), config=config)
-    )
+    completed = InvestigationState.model_validate(await engine.graph.ainvoke(Command(resume="Compare July and August 2024."), config=config))
     assert completed.status.value == "completed"
     # The premise runs once before causal work. A clarification may add
     # context, but it must not re-run that completed baseline.
     assert len(completed.investigation_history) == 3
-    assert {step.requirement_id for step in completed.investigation_history} == {None, "hyp_stock:r1", "hyp_demand:r1"}
+    assert {step.requirement_id for step in completed.investigation_history} == {
+        None,
+        "hyp_stock:r1",
+        "hyp_demand:r1",
+    }
     assert llm.evidence_calls == 3
 
 
@@ -2300,17 +2641,33 @@ class GenericEvidenceLLM:
         assert response_model is EvidenceAssessment
         return EvidenceAssessment.model_validate(
             {
-                "evidence": [{
-                    "id": "ev_coverage",
-                    "description": "The requested period has no recorded events.",
-                    "source": "analytics",
-                    "relationship": "contradicting",
-                    "confidence": 0.9,
-                    "hypothesis_ids": ["hyp_stock", "hyp_demand"],
-                }],
+                "evidence": [
+                    {
+                        "id": "ev_coverage",
+                        "description": "The requested period has no recorded events.",
+                        "source": "analytics",
+                        "relationship": "contradicting",
+                        "confidence": 0.9,
+                        "hypothesis_ids": ["hyp_stock", "hyp_demand"],
+                    }
+                ],
                 "hypotheses": [
-                    {"id": "hyp_stock", "name": "Inventory constraint", "description": "Inventory constrained sales", "category": "inventory", "confidence": 0.1, "status": "rejected"},
-                    {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.1, "status": "rejected"},
+                    {
+                        "id": "hyp_stock",
+                        "name": "Inventory constraint",
+                        "description": "Inventory constrained sales",
+                        "category": "inventory",
+                        "confidence": 0.1,
+                        "status": "rejected",
+                    },
+                    {
+                        "id": "hyp_demand",
+                        "name": "Demand decline",
+                        "description": "Demand declined",
+                        "category": "demand",
+                        "confidence": 0.1,
+                        "status": "rejected",
+                    },
                 ],
                 "confidence": 0.2,
                 "ambiguity": "Which historical comparison period should be used?",
@@ -2328,8 +2685,20 @@ async def test_investigation_level_evidence_does_not_change_or_attach_to_all_hyp
             "question": "Why did revenue fall?",
             "datasources": [registry.source.summary.model_dump()],
             "hypotheses": [
-                {"id": "hyp_stock", "name": "Inventory constraint", "description": "Inventory constrained sales", "category": "inventory", "confidence": 0.5},
-                {"id": "hyp_demand", "name": "Demand decline", "description": "Demand declined", "category": "demand", "confidence": 0.4},
+                {
+                    "id": "hyp_stock",
+                    "name": "Inventory constraint",
+                    "description": "Inventory constrained sales",
+                    "category": "inventory",
+                    "confidence": 0.5,
+                },
+                {
+                    "id": "hyp_demand",
+                    "name": "Demand decline",
+                    "description": "Demand declined",
+                    "category": "demand",
+                    "confidence": 0.4,
+                },
             ],
         }
     )
@@ -2413,47 +2782,56 @@ def test_only_mechanism_evidence_with_matching_topics_can_attach_to_a_hypothesis
 
 
 def test_new_claim_contract_requires_an_explicit_single_evidence_owner() -> None:
-    state = InvestigationState.model_validate({
-        "investigation_id": "inv_claim_owner",
-        "question": "Why did the measure change?",
-        "datasources": [],
-        "hypotheses": [{
-            "id": "claim_one",
-            "name": "A proposed explanation",
-            "description": "A proposed explanation could account for the outcome.",
-            "category": "generic",
-            "claim": {
-                "cause": "A proposed change",
-                "mechanism": "changes the requested outcome",
-                "outcome": "the requested outcome",
-                "required_evidence": ["A direct matching observation."],
-            },
-            "confidence": 0.3,
-        }],
-    })
-    assessment = EvidenceAssessment.model_validate({
-        "evidence": [{
-            "id": "unowned",
-            "description": "A result was returned.",
-            "source": "connected records",
-            "relationship": "supporting",
-            "scope": "mechanism",
+    state = InvestigationState.model_validate(
+        {
+            "investigation_id": "inv_claim_owner",
+            "question": "Why did the measure change?",
+            "datasources": [],
+            "hypotheses": [
+                {
+                    "id": "claim_one",
+                    "name": "A proposed explanation",
+                    "description": "A proposed explanation could account for the outcome.",
+                    "category": "generic",
+                    "claim": {
+                        "cause": "A proposed change",
+                        "mechanism": "changes the requested outcome",
+                        "outcome": "the requested outcome",
+                        "required_evidence": ["A direct matching observation."],
+                    },
+                    "confidence": 0.3,
+                }
+            ],
+        }
+    )
+    assessment = EvidenceAssessment.model_validate(
+        {
+            "evidence": [
+                {
+                    "id": "unowned",
+                    "description": "A result was returned.",
+                    "source": "connected records",
+                    "relationship": "supporting",
+                    "scope": "mechanism",
+                    "confidence": 0.8,
+                    "hypothesis_ids": ["claim_one"],
+                },
+                {
+                    "id": "owned",
+                    "description": "A result directly tested the proposed explanation.",
+                    "source": "connected records",
+                    "relationship": "supporting",
+                    "scope": "mechanism",
+                    "basis": "direct",
+                    "claim_id": "claim_one",
+                    "hypothesis_ids": ["claim_one"],
+                    "confidence": 0.8,
+                },
+            ],
+            "hypotheses": [],
             "confidence": 0.8,
-            "hypothesis_ids": ["claim_one"],
-        }, {
-            "id": "owned",
-            "description": "A result directly tested the proposed explanation.",
-            "source": "connected records",
-            "relationship": "supporting",
-            "scope": "mechanism",
-            "basis": "direct",
-            "claim_id": "claim_one",
-            "hypothesis_ids": ["claim_one"],
-            "confidence": 0.8,
-        }],
-        "hypotheses": [],
-        "confidence": 0.8,
-    })
+        }
+    )
 
     evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
 
@@ -2466,34 +2844,58 @@ def test_new_claim_contract_requires_an_explicit_single_evidence_owner() -> None
 
 def test_live_observation_owner_overrides_an_incorrect_llm_evidence_owner() -> None:
     """The evidence interpreter cannot move H1's result into H2's tree."""
-    state = InvestigationState.model_validate({
-        "investigation_id": "inv_fixed_evidence_owner",
-        "question": "Why did the measure change?",
-        "datasources": [],
-        "hypotheses": [
-            {"id": "h1", "name": "First cause", "description": "First explanation", "category": "one", "confidence": 0.4},
-            {"id": "h2", "name": "Second cause", "description": "Second explanation", "category": "two", "confidence": 0.4},
-        ],
-        "observations": [{
-            "description": "The selected H1 check completed.",
-            "source": "analytics",
-            "value": {"hypothesis_id": "h1", "requirement_id": "h1:r1", "evidence_contract": {"role": "causal"}},
-        }],
-    })
-    assessment = EvidenceAssessment.model_validate({
-        "evidence": [{
-            "id": "mislabelled",
-            "description": "A result from H1's selected check.",
-            "source": "analytics",
-            "relationship": "supporting",
-            "scope": "mechanism",
+    state = InvestigationState.model_validate(
+        {
+            "investigation_id": "inv_fixed_evidence_owner",
+            "question": "Why did the measure change?",
+            "datasources": [],
+            "hypotheses": [
+                {
+                    "id": "h1",
+                    "name": "First cause",
+                    "description": "First explanation",
+                    "category": "one",
+                    "confidence": 0.4,
+                },
+                {
+                    "id": "h2",
+                    "name": "Second cause",
+                    "description": "Second explanation",
+                    "category": "two",
+                    "confidence": 0.4,
+                },
+            ],
+            "observations": [
+                {
+                    "description": "The selected H1 check completed.",
+                    "source": "analytics",
+                    "value": {
+                        "hypothesis_id": "h1",
+                        "requirement_id": "h1:r1",
+                        "evidence_contract": {"role": "causal"},
+                    },
+                }
+            ],
+        }
+    )
+    assessment = EvidenceAssessment.model_validate(
+        {
+            "evidence": [
+                {
+                    "id": "mislabelled",
+                    "description": "A result from H1's selected check.",
+                    "source": "analytics",
+                    "relationship": "supporting",
+                    "scope": "mechanism",
+                    "confidence": 0.8,
+                    "claim_id": "h2",
+                    "hypothesis_ids": ["h2"],
+                }
+            ],
+            "hypotheses": [],
             "confidence": 0.8,
-            "claim_id": "h2",
-            "hypothesis_ids": ["h2"],
-        }],
-        "hypotheses": [],
-        "confidence": 0.8,
-    })
+        }
+    )
 
     evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
 
@@ -2504,32 +2906,48 @@ def test_live_observation_owner_overrides_an_incorrect_llm_evidence_owner() -> N
 
 
 def test_premise_contract_keeps_baseline_evidence_out_of_hypothesis_trees() -> None:
-    state = InvestigationState.model_validate({
-        "investigation_id": "inv_baseline_evidence",
-        "question": "Why did sales fall?",
-        "datasources": [],
-        "hypotheses": [{"id": "h1", "name": "A cause", "description": "A cause", "category": "generic", "confidence": 0.4}],
-        "observations": [{
-            "description": "Validate the reported change.",
-            "source": "analytics",
-            "value": {"evidence_contract": {"role": "baseline", "basis": "direct"}},
-        }],
-    })
-    assessment = EvidenceAssessment.model_validate({
-        "evidence": [{
-            "id": "baseline",
-            "description": "Sales increased by 7.1%.",
-            "source": "analytics",
-            "relationship": "direct",
-            "scope": "mechanism",
+    state = InvestigationState.model_validate(
+        {
+            "investigation_id": "inv_baseline_evidence",
+            "question": "Why did sales fall?",
+            "datasources": [],
+            "hypotheses": [
+                {
+                    "id": "h1",
+                    "name": "A cause",
+                    "description": "A cause",
+                    "category": "generic",
+                    "confidence": 0.4,
+                }
+            ],
+            "observations": [
+                {
+                    "description": "Validate the reported change.",
+                    "source": "analytics",
+                    "value": {"evidence_contract": {"role": "baseline", "basis": "direct"}},
+                }
+            ],
+        }
+    )
+    assessment = EvidenceAssessment.model_validate(
+        {
+            "evidence": [
+                {
+                    "id": "baseline",
+                    "description": "Sales increased by 7.1%.",
+                    "source": "analytics",
+                    "relationship": "direct",
+                    "scope": "mechanism",
+                    "confidence": 0.95,
+                    "claim_id": "h1",
+                    "hypothesis_ids": ["h1"],
+                    "data": [{"field": "measured_metric_percentage_change", "value": 7.1}],
+                }
+            ],
+            "hypotheses": [],
             "confidence": 0.95,
-            "claim_id": "h1",
-            "hypothesis_ids": ["h1"],
-            "data": [{"field": "measured_metric_percentage_change", "value": 7.1}],
-        }],
-        "hypotheses": [],
-        "confidence": 0.95,
-    })
+        }
+    )
 
     evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
 
@@ -2540,33 +2958,49 @@ def test_premise_contract_keeps_baseline_evidence_out_of_hypothesis_trees() -> N
 
 
 def test_hypothesis_baseline_evidence_stays_with_its_selected_hypothesis() -> None:
-    state = InvestigationState.model_validate({
-        "investigation_id": "inv_hypothesis_baseline_evidence",
-        "question": "Why did sales fall?",
-        "datasources": [],
-        "hypotheses": [{"id": "h1", "name": "Store visits", "description": "Visits fell", "category": "generic", "confidence": 0.4}],
-        "observations": [{
-            "description": "Compare visits before and after.",
-            "source": "analytics",
-            "value": {
-                "hypothesis_id": "h1",
-                "requirement_id": "h1:r1",
-                "evidence_contract": {"role": "baseline", "basis": "direct"},
-            },
-        }],
-    })
-    assessment = EvidenceAssessment.model_validate({
-        "evidence": [{
-            "id": "visits",
-            "description": "Store visits were lower in the later period.",
-            "source": "analytics",
-            "relationship": "supporting",
-            "scope": "premise",
+    state = InvestigationState.model_validate(
+        {
+            "investigation_id": "inv_hypothesis_baseline_evidence",
+            "question": "Why did sales fall?",
+            "datasources": [],
+            "hypotheses": [
+                {
+                    "id": "h1",
+                    "name": "Store visits",
+                    "description": "Visits fell",
+                    "category": "generic",
+                    "confidence": 0.4,
+                }
+            ],
+            "observations": [
+                {
+                    "description": "Compare visits before and after.",
+                    "source": "analytics",
+                    "value": {
+                        "hypothesis_id": "h1",
+                        "requirement_id": "h1:r1",
+                        "evidence_contract": {"role": "baseline", "basis": "direct"},
+                    },
+                }
+            ],
+        }
+    )
+    assessment = EvidenceAssessment.model_validate(
+        {
+            "evidence": [
+                {
+                    "id": "visits",
+                    "description": "Store visits were lower in the later period.",
+                    "source": "analytics",
+                    "relationship": "supporting",
+                    "scope": "premise",
+                    "confidence": 0.9,
+                }
+            ],
+            "hypotheses": [],
             "confidence": 0.9,
-        }],
-        "hypotheses": [],
-        "confidence": 0.9,
-    })
+        }
+    )
 
     evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
 
@@ -2578,9 +3012,11 @@ def test_hypothesis_baseline_evidence_stays_with_its_selected_hypothesis() -> No
 
 
 def test_before_after_rows_use_decimal_rate_calculation_for_integer_totals() -> None:
-    rows = InvestigationEngine._normalize_before_after_rows([
-        {"earlier_value": 60666, "later_value": 24611, "rate_change_percent": 0},
-    ])
+    rows = InvestigationEngine._normalize_before_after_rows(
+        [
+            {"earlier_value": 60666, "later_value": 24611, "rate_change_percent": 0},
+        ]
+    )
 
     assert rows[0]["rate_change_percent"] == pytest.approx(-59.43, abs=0.01)
 
@@ -2589,19 +3025,23 @@ def test_query_cache_is_scoped_to_the_final_sql_and_source_schema_version() -> N
     engine = InvestigationEngine(DatasourceRegistry())
     sql = "SELECT revenue FROM sales_events WHERE occurred_at >= DATE '2024-07-01'"
     key = engine._query_cache_key("analytics", "schema-v1", sql)
-    state = InvestigationState.model_validate({
-        "investigation_id": "inv_query_cache",
-        "question": "Why did revenue change?",
-        "datasources": [],
-        "query_result_cache": [{
-            "key": key,
-            "datasource_id": "analytics",
-            "schema_fingerprint": "schema-v1",
-            "rows": [{"revenue": 42}],
-            "display_rows": [{"revenue": 42}],
-            "deterministic_summary": {"row_count": 1},
-        }],
-    })
+    state = InvestigationState.model_validate(
+        {
+            "investigation_id": "inv_query_cache",
+            "question": "Why did revenue change?",
+            "datasources": [],
+            "query_result_cache": [
+                {
+                    "key": key,
+                    "datasource_id": "analytics",
+                    "schema_fingerprint": "schema-v1",
+                    "rows": [{"revenue": 42}],
+                    "display_rows": [{"revenue": 42}],
+                    "deterministic_summary": {"row_count": 1},
+                }
+            ],
+        }
+    )
 
     assert engine._cached_query_result(state, "analytics", "schema-v1", sql) is not None
     assert engine._cached_query_result(state, "analytics", "schema-v2", sql) is None
@@ -2612,8 +3052,22 @@ async def test_rejected_premise_finishes_without_causal_synthesis() -> None:
     registry = FakeRegistry()
     engine = InvestigationEngine(registry, llm=FixtureLLM())
     hypotheses = [
-        {"id": "hyp_demand", "name": "Lower demand", "description": "Demand fell", "category": "demand", "confidence": 0.02, "status": "rejected"},
-        {"id": "hyp_price", "name": "Lower prices", "description": "Prices fell", "category": "pricing", "confidence": 0.1, "status": "rejected"},
+        {
+            "id": "hyp_demand",
+            "name": "Lower demand",
+            "description": "Demand fell",
+            "category": "demand",
+            "confidence": 0.02,
+            "status": "rejected",
+        },
+        {
+            "id": "hyp_price",
+            "name": "Lower prices",
+            "description": "Prices fell",
+            "category": "pricing",
+            "confidence": 0.1,
+            "status": "rejected",
+        },
     ]
     state = InvestigationState.model_validate(
         {
@@ -2623,14 +3077,16 @@ async def test_rejected_premise_finishes_without_causal_synthesis() -> None:
             "premise_to_validate": "Sales declined in the last three months of 2024.",
             "premise_status": "rejected",
             "hypotheses": hypotheses,
-            "evidence": [{
-                "id": "ev_totals",
-                "description": "The total amount customers spent was slightly higher in the later period.",
-                "source": "analytics",
-                "relationship": "direct",
-                "confidence": 0.9,
-                "hypothesis_ids": ["hyp_demand", "hyp_price"],
-            }],
+            "evidence": [
+                {
+                    "id": "ev_totals",
+                    "description": "The total amount customers spent was slightly higher in the later period.",
+                    "source": "analytics",
+                    "relationship": "direct",
+                    "confidence": 0.9,
+                    "hypothesis_ids": ["hyp_demand", "hyp_price"],
+                }
+            ],
         }
     )
 
@@ -2664,15 +3120,17 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
                     "confidence": 0.4,
                 }
             ],
-            "evidence": [{
-                "id": "ev_units",
-                "description": "Units sold changed by only −0.09% in the later period.",
-                "source": "analytics",
-                "relationship": "direct",
-                "confidence": 0.9,
-                "hypothesis_ids": ["hyp_demand"],
-                "data": [{"field": "rate_change_percent", "value": -0.09}],
-            }],
+            "evidence": [
+                {
+                    "id": "ev_units",
+                    "description": "Units sold changed by only −0.09% in the later period.",
+                    "source": "analytics",
+                    "relationship": "direct",
+                    "confidence": 0.9,
+                    "hypothesis_ids": ["hyp_demand"],
+                    "data": [{"field": "rate_change_percent", "value": -0.09}],
+                }
+            ],
         }
     )
 
@@ -2686,15 +3144,23 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
 
 
 def test_final_analysis_uses_relative_percentages_and_downgrades_an_incomplete_causal_claim() -> None:
-    hypothesis = Hypothesis.model_validate({
-        "id": "hyp_driver",
-        "name": "An immediate driver",
-        "description": "A measured immediate driver changed the outcome.",
-        "category": "generic",
-        "confidence": 0.9,
-        "status": "supported",
-        "requirements": [{"id": "hyp_driver:r1", "description": "Verify the upstream cause.", "status": "pending"}],
-    })
+    hypothesis = Hypothesis.model_validate(
+        {
+            "id": "hyp_driver",
+            "name": "An immediate driver",
+            "description": "A measured immediate driver changed the outcome.",
+            "category": "generic",
+            "confidence": 0.9,
+            "status": "supported",
+            "requirements": [
+                {
+                    "id": "hyp_driver:r1",
+                    "description": "Verify the upstream cause.",
+                    "status": "pending",
+                }
+            ],
+        }
+    )
     analysis = FinalAnalysis(
         likely_root_cause="The measured driver changed.",
         confidence=0.9,
@@ -2728,14 +3194,16 @@ def test_rejected_premise_does_not_request_a_second_baseline_check() -> None:
         datasources=[],
         premise_to_validate="Sales fell in July.",
         premise_status="rejected",
-        evidence=[Evidence(
-            description="Sales increased in July.",
-            source="analytics",
-            relationship="direct",
-            confidence=0.95,
-            scope="premise",
-            data=[EvidenceDataPoint(field="measured_metric_percentage_change", value=7.1)],
-        )],
+        evidence=[
+            Evidence(
+                description="Sales increased in July.",
+                source="analytics",
+                relationship="direct",
+                confidence=0.95,
+                scope="premise",
+                data=[EvidenceDataPoint(field="measured_metric_percentage_change", value=7.1)],
+            )
+        ],
     )
 
     assert not engine._requires_premise_validation(state)
@@ -2833,7 +3301,10 @@ class CommentRepairingLLM:
         assert response_model is QueryPlan
         self.query_calls += 1
         if self.query_calls == 1:
-            return QueryPlan(sql="/* initial explanatory note */ SELECT revenue FROM sales_events", purpose="Measure revenue")
+            return QueryPlan(
+                sql="/* initial explanatory note */ SELECT revenue FROM sales_events",
+                purpose="Measure revenue",
+            )
         assert payload["rejection_reason"] == "SQL comments are not allowed"
         assert "Do not include SQL comments" in instruction
         return QueryPlan(sql="SELECT revenue FROM sales_events", purpose="Measure revenue")
@@ -2849,7 +3320,10 @@ class SyntaxRepairingLLM:
         assert response_model is QueryPlan
         self.query_calls += 1
         if self.query_calls == 1:
-            return QueryPlan(sql="SELECT CASE WHEN ( THEN revenue END FROM sales_events", purpose="Measure revenue")
+            return QueryPlan(
+                sql="SELECT CASE WHEN ( THEN revenue END FROM sales_events",
+                purpose="Measure revenue",
+            )
         assert "Invalid SQL:" in payload["rejection_reason"]
         assert "Ensure every parenthesis is balanced" in instruction
         return QueryPlan(sql="SELECT revenue FROM sales_events", purpose="Measure revenue")
@@ -2894,13 +3368,15 @@ async def test_failed_query_is_contained_to_its_hypothesis() -> None:
         investigation_id="inv_contained_query_failure",
         question="Why did revenue fall?",
         datasources=[registry.source.summary],
-        hypotheses=[{
-            "id": "hypothesis",
-            "name": "Inventory availability",
-            "description": "Inventory constrained sales.",
-            "category": "inventory",
-            "confidence": 0.5,
-        }],
+        hypotheses=[
+            {
+                "id": "hypothesis",
+                "name": "Inventory availability",
+                "description": "Inventory constrained sales.",
+                "category": "inventory",
+                "confidence": 0.5,
+            }
+        ],
         pending_step={
             "hypothesis_id": "hypothesis",
             "action": "Compare revenue.",
@@ -2958,13 +3434,20 @@ async def test_database_compiler_key_error_is_contained_to_its_hypothesis() -> N
         investigation_id="inv_compiler_failure",
         question="Why did revenue fall?",
         datasources=[registry.source.summary],
-        hypotheses=[{
-            "id": "hypothesis", "name": "Inventory availability", "description": "Inventory constrained sales.",
-            "category": "inventory", "confidence": 0.5,
-        }],
+        hypotheses=[
+            {
+                "id": "hypothesis",
+                "name": "Inventory availability",
+                "description": "Inventory constrained sales.",
+                "category": "inventory",
+                "confidence": 0.5,
+            }
+        ],
         pending_step={
-            "hypothesis_id": "hypothesis", "action": "Compare revenue.",
-            "datasource_id": "analytics", "rationale": "Test inventory.",
+            "hypothesis_id": "hypothesis",
+            "action": "Compare revenue.",
+            "datasource_id": "analytics",
+            "rationale": "Test inventory.",
         },
     )
 
@@ -2982,24 +3465,34 @@ async def test_repeated_completed_result_exhausts_the_current_hypothesis() -> No
         investigation_id="inv_repeated_result",
         question="Why did revenue fall?",
         datasources=[],
-        observations=[Observation(
-            description="First measurement.",
-            source="analytics",
-            value={"rows": [{"display_name": "Lantern", "units": 10}], "hypothesis_id": "hypothesis"},
-        )],
-        hypotheses=[{
-            "id": "hypothesis", "name": "Inventory availability", "description": "Inventory constrained sales.",
-            "category": "inventory", "confidence": 0.5,
-        }],
+        observations=[
+            Observation(
+                description="First measurement.",
+                source="analytics",
+                value={
+                    "rows": [{"display_name": "Lantern", "units": 10}],
+                    "hypothesis_id": "hypothesis",
+                },
+            )
+        ],
+        hypotheses=[
+            {
+                "id": "hypothesis",
+                "name": "Inventory availability",
+                "description": "Inventory constrained sales.",
+                "category": "inventory",
+                "confidence": 0.5,
+            }
+        ],
         pending_step={
-            "hypothesis_id": "hypothesis", "action": "Repeat revenue measurement.",
-            "datasource_id": "analytics", "rationale": "Retry the same check.",
+            "hypothesis_id": "hypothesis",
+            "action": "Repeat revenue measurement.",
+            "datasource_id": "analytics",
+            "rationale": "Retry the same check.",
         },
     )
 
-    assert engine._has_duplicate_completed_result(
-        state, "analytics", "hypothesis", [{"display_name": "Lantern", "units": 10}]
-    )
+    assert engine._has_duplicate_completed_result(state, "analytics", "hypothesis", [{"display_name": "Lantern", "units": 10}])
     result = await engine._record_duplicate_step(state, [], [], 0, [], 0, "SELECT units FROM sales_events")
 
     assert result["pending_step"] is None
@@ -3073,9 +3566,7 @@ async def test_investigation_filters_a_primary_source_with_an_approved_related_l
 
     assert "item_id IN ('P162')" in registry.analytics.queries[0]
     assert "lookup_outdoor_products" not in registry.analytics.queries[0]
-    assert registry.catalog.queries[0] == (
-        "SELECT id AS relationship_key FROM public.products WHERE name ILIKE 'Lantern' LIMIT 500"
-    )
+    assert registry.catalog.queries[0] == ("SELECT id AS relationship_key FROM public.products WHERE name ILIKE 'Lantern' LIMIT 500")
     assert result["query_count"] == 3  # catalog lookup, primary query, display-name lookup
     assert result["observations"][-1].value["rows"] == [{"units_sold": 97, "display_name": "Lantern"}]
 
@@ -3096,48 +3587,60 @@ async def test_investigation_filters_a_primary_target_source_with_a_reverse_appr
         },
     )
     metadata = [
-        {"id": "catalog", "tables": [{"name": "public.products", "columns": [], "foreign_keys": []}]},
-        {"id": "analytics", "tables": [{"name": "public.sales_events", "columns": [], "foreign_keys": []}]},
+        {
+            "id": "catalog",
+            "tables": [{"name": "public.products", "columns": [], "foreign_keys": []}],
+        },
+        {
+            "id": "analytics",
+            "tables": [{"name": "public.sales_events", "columns": [], "foreign_keys": []}],
+        },
     ]
 
     sql, steps, query_count, coverage, cache_entries = await engine._apply_cross_datasource_lookups(
         state,
         "catalog",
         "SELECT p.id FROM public.products AS p WHERE p.name = 'Lantern'",
-        [CrossDatasourceLookup(
-            datasource_id="analytics",
-            relation_id="rel_item",
-            sql="SELECT DISTINCT item_id AS relationship_key FROM public.sales_events",
-            purpose="Find catalog items with recorded sales.",
-        )],
+        [
+            CrossDatasourceLookup(
+                datasource_id="analytics",
+                relation_id="rel_item",
+                sql="SELECT DISTINCT item_id AS relationship_key FROM public.sales_events",
+                purpose="Find catalog items with recorded sales.",
+            )
+        ],
         metadata,
     )
 
     assert "p.id IN ('P162')" in sql
-    assert registry.analytics.queries == [
-        "SELECT DISTINCT item_id AS relationship_key FROM public.sales_events LIMIT 500"
-    ]
+    assert registry.analytics.queries == ["SELECT DISTINCT item_id AS relationship_key FROM public.sales_events LIMIT 500"]
     assert steps[0].datasource_id == "analytics"
     assert query_count == 1
     assert coverage[0].matched_records == 1
     assert len(cache_entries) == 1
 
     resumed_state = state.model_copy(update={"cross_datasource_lookup_cache": cache_entries})
-    _, _, reused_query_count, _, reused_cache_entries = await engine._apply_cross_datasource_lookups(
+    (
+        _,
+        _,
+        reused_query_count,
+        _,
+        reused_cache_entries,
+    ) = await engine._apply_cross_datasource_lookups(
         resumed_state,
         "catalog",
         "SELECT p.id FROM public.products AS p WHERE p.name = 'Lantern'",
-        [CrossDatasourceLookup(
-            datasource_id="analytics",
-            relation_id="rel_item",
-            sql="SELECT DISTINCT item_id AS relationship_key FROM public.sales_events",
-            purpose="Find catalog items with recorded sales.",
-        )],
+        [
+            CrossDatasourceLookup(
+                datasource_id="analytics",
+                relation_id="rel_item",
+                sql="SELECT DISTINCT item_id AS relationship_key FROM public.sales_events",
+                purpose="Find catalog items with recorded sales.",
+            )
+        ],
         metadata,
     )
 
     assert reused_query_count == 0
     assert reused_cache_entries == []
-    assert registry.analytics.queries == [
-        "SELECT DISTINCT item_id AS relationship_key FROM public.sales_events LIMIT 500"
-    ]
+    assert registry.analytics.queries == ["SELECT DISTINCT item_id AS relationship_key FROM public.sales_events LIMIT 500"]

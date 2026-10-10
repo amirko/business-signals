@@ -29,9 +29,10 @@ def test_direct_answer_mixin_keeps_text_filters_safe_and_readable() -> None:
     assert "metric.platform ILIKE 'iOS'" in sql
     assert "metric.store_id = store.id" in sql
     assert "metric.completed_orders = 0" in sql
-    assert DirectAnswerMixin._safe_direct_answer_text(
-        "Return the three product IDs with the highest sales."
-    ) == "Return the three items with the highest sales."
+    assert (
+        DirectAnswerMixin._safe_direct_answer_text("Return the three product IDs with the highest sales.")
+        == "Return the three items with the highest sales."
+    )
 
 
 def test_direct_answer_aggregates_complete_joined_rows_before_display_capping() -> None:

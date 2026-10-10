@@ -3,7 +3,6 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "examples" / "data"
 
@@ -35,14 +34,20 @@ def test_analytics_fixtures_preserve_supplier_shortage_signal() -> None:
     products = read_csv("catalog/products.csv")
 
     assert set(sales[0]) == {
-        "occurred_at", "event_id", "product_id", "store_id", "units", "revenue", "channel",
-        "platform", "payment_method", "payment_status", "app_release",
+        "occurred_at",
+        "event_id",
+        "product_id",
+        "store_id",
+        "units",
+        "revenue",
+        "channel",
+        "platform",
+        "payment_method",
+        "payment_status",
+        "app_release",
     }
     milan_p001 = [row for row in inventory if row["product_id"] == "P001" and row["store_id"] == "IT-MIL-01"]
-    july_shortage = [
-        row for row in milan_p001
-        if "2024-07-08" <= row["recorded_at"][:10] <= "2024-07-29"
-    ]
+    july_shortage = [row for row in milan_p001 if "2024-07-08" <= row["recorded_at"][:10] <= "2024-07-29"]
     assert [int(row["available_units"]) for row in july_shortage] == [49, 34, 19, 4]
     assert all(int(row["incoming_units"]) == 0 for row in july_shortage)
 
@@ -76,11 +81,7 @@ def test_dubai_weather_and_geopolitical_disruption_benchmarks() -> None:
     dubai_physical = {"AE-DXB-01", "AE-DXB-02", "AE-DXB-03"}
 
     def units(start: date, end: date, store_ids: set[str]) -> int:
-        return sum(
-            int(row["units"])
-            for row in sales
-            if start <= date.fromisoformat(row["occurred_at"][:10]) <= end and row["store_id"] in store_ids
-        )
+        return sum(int(row["units"]) for row in sales if start <= date.fromisoformat(row["occurred_at"][:10]) <= end and row["store_id"] in store_ids)
 
     # The April 2024 flood disrupts physical stores while online units remain stable.
     weather_baseline = units(date(2024, 4, 9), date(2024, 4, 12), dubai_physical)
@@ -89,10 +90,7 @@ def test_dubai_weather_and_geopolitical_disruption_benchmarks() -> None:
     online_window = units(date(2024, 4, 16), date(2024, 4, 19), {"AE-WEB-01"})
     assert weather_window < weather_baseline * 0.3
     assert online_window > online_baseline * 0.7
-    assert any(
-        row["operating_status"] == "closed" and row["restriction_reason"] == "severe weather"
-        for row in operations
-    )
+    assert any(row["operating_status"] == "closed" and row["restriction_reason"] == "severe weather" for row in operations)
 
     # The March 2026 conflict benchmark restricts physical operations and footfall,
     # while stock remains available and online trade is not suppressed.
@@ -108,7 +106,4 @@ def test_dubai_weather_and_geopolitical_disruption_benchmarks() -> None:
         for row in inventory
         if row["store_id"] in dubai_physical and row["recorded_at"].startswith(("2026-02", "2026-03"))
     )
-    assert any(
-        row["store_id"] in dubai_physical and row["recorded_at"].startswith("2026-03") and int(row["visits"]) < 250
-        for row in traffic
-    )
+    assert any(row["store_id"] in dubai_physical and row["recorded_at"].startswith("2026-03") and int(row["visits"]) < 250 for row in traffic)

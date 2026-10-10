@@ -33,9 +33,7 @@ logger = logging.getLogger("uvicorn.error")
 
 async def _configure_checkpoint_connection(connection: AsyncConnection) -> None:
     """Apply the checkpoint schema to every connection leased from the pool."""
-    await connection.execute(
-        sql.SQL("SET search_path TO {}, public").format(sql.Identifier(settings.checkpoint_schema))
-    )
+    await connection.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(settings.checkpoint_schema)))
 
 
 @asynccontextmanager
@@ -62,6 +60,7 @@ async def lifespan(_: FastAPI):
         await checkpointer.setup()
         investigations.set_checkpointer(checkpointer)
         yield
+
 
 app = FastAPI(
     title="Business Signals API",
@@ -162,7 +161,9 @@ async def suggest_cross_datasource_relationships() -> list[CrossDatasourceRelati
 
 
 @app.post("/api/relationships/validate", response_model=CrossDatasourceRelation)
-async def validate_cross_datasource_relationship(payload: CrossDatasourceRelationCreate) -> CrossDatasourceRelation:
+async def validate_cross_datasource_relationship(
+    payload: CrossDatasourceRelationCreate,
+) -> CrossDatasourceRelation:
     try:
         return await registry.validate_cross_relation(payload)
     except (KeyError, ValueError) as exc:
@@ -170,7 +171,9 @@ async def validate_cross_datasource_relationship(payload: CrossDatasourceRelatio
 
 
 @app.post("/api/relationships", response_model=CrossDatasourceRelation, status_code=201)
-async def save_cross_datasource_relationship(payload: CrossDatasourceRelationCreate) -> CrossDatasourceRelation:
+async def save_cross_datasource_relationship(
+    payload: CrossDatasourceRelationCreate,
+) -> CrossDatasourceRelation:
     try:
         return await registry.save_cross_relation(payload)
     except (KeyError, ValueError) as exc:
@@ -178,9 +181,7 @@ async def save_cross_datasource_relationship(payload: CrossDatasourceRelationCre
 
 
 @app.put("/api/relationships/{relationship_id}", response_model=CrossDatasourceRelation)
-async def update_cross_datasource_relationship(
-    relationship_id: str, payload: CrossDatasourceRelationCreate
-) -> CrossDatasourceRelation:
+async def update_cross_datasource_relationship(relationship_id: str, payload: CrossDatasourceRelationCreate) -> CrossDatasourceRelation:
     try:
         return await registry.update_cross_relation(relationship_id, payload)
     except (KeyError, ValueError) as exc:
@@ -195,7 +196,17 @@ async def delete_cross_datasource_relationship(relationship_id: str) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
+@app.post(
+    "/api/investigations",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+    status_code=202,
+)
 async def create_investigation(payload: InvestigationCreate) -> InvestigationState:
     try:
         return await investigations.create(payload)
@@ -209,7 +220,16 @@ async def create_investigation(payload: InvestigationCreate) -> InvestigationSta
         ) from exc
 
 
-@app.get("/api/investigations", response_model=list[InvestigationState], response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
+@app.get(
+    "/api/investigations",
+    response_model=list[InvestigationState],
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+)
 async def list_investigations() -> list[InvestigationState]:
     return investigations.list()
 
@@ -222,7 +242,16 @@ async def delete_all_investigations() -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.get("/api/investigations/{investigation_id}", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
+@app.get(
+    "/api/investigations/{investigation_id}",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+)
 async def get_investigation(investigation_id: str) -> InvestigationState:
     try:
         return investigations.get(investigation_id)
@@ -240,7 +269,16 @@ async def delete_investigation(investigation_id: str) -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/stop", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"})
+@app.post(
+    "/api/investigations/{investigation_id}/stop",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+)
 async def stop_investigation(investigation_id: str) -> InvestigationState:
     try:
         return await investigations.stop(investigation_id)
@@ -276,7 +314,17 @@ async def stream_events(
     return EventSourceResponse(generate(), ping=15)
 
 
-@app.post("/api/investigations/{investigation_id}/responses", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
+@app.post(
+    "/api/investigations/{investigation_id}/responses",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+    status_code=202,
+)
 async def respond_to_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.respond(investigation_id, payload.response)
@@ -286,7 +334,17 @@ async def respond_to_investigation(investigation_id: str, payload: HumanResponse
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/follow-up", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
+@app.post(
+    "/api/investigations/{investigation_id}/follow-up",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+    status_code=202,
+)
 async def follow_up_on_investigation(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.follow_up(investigation_id, payload.response)
@@ -296,7 +354,17 @@ async def follow_up_on_investigation(investigation_id: str, payload: HumanRespon
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/investigations/{investigation_id}/skip-clarification", response_model=InvestigationState, response_model_exclude={"resolved_entities", "query_scopes", "query_result_cache", "cross_datasource_lookup_cache"}, status_code=202)
+@app.post(
+    "/api/investigations/{investigation_id}/skip-clarification",
+    response_model=InvestigationState,
+    response_model_exclude={
+        "resolved_entities",
+        "query_scopes",
+        "query_result_cache",
+        "cross_datasource_lookup_cache",
+    },
+    status_code=202,
+)
 async def skip_investigation_clarification(investigation_id: str, payload: HumanResponse) -> InvestigationState:
     try:
         return await investigations.skip_clarification(investigation_id, payload.response)
