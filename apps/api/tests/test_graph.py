@@ -32,6 +32,7 @@ from business_signals.models import (
     ExternalFinding,
     FinalAnalysis,
     HumanFeedback,
+    Hypothesis,
     HypothesisStatus,
     InvestigationState,
     InvestigationStatus,
@@ -231,6 +232,12 @@ class PrematureFinishDecisionLLM:
         return InvestigationDecision(action="finish", reason="The first query appears conclusive.")
 
 
+class FinishWithUntestedCauseLLM:
+    async def structured(self, response_model, instruction: str, payload: dict):
+        assert response_model is InvestigationDecision
+        return InvestigationDecision(action="finish", reason="The immediate mechanism is measured.")
+
+
 @pytest.mark.asyncio
 async def test_selected_external_agent_runs_as_evidence_and_never_as_a_direct_cause() -> None:
     emitted = []
@@ -400,6 +407,54 @@ async def test_decision_runs_an_eligible_external_check_before_accepting_an_inte
     result = await engine._decide(state)
 
     assert result["next_action"] == "external"
+
+
+@pytest.mark.asyncio
+async def test_decision_does_not_finish_at_a_measured_driver_when_an_internal_cause_is_untested() -> None:
+    state = InvestigationState(
+        investigation_id="inv_proximate_not_final",
+        question="Why did the measure fall?",
+        datasources=[],
+        premise_status="confirmed",
+        query_count=2,
+        hypotheses=[
+            {
+                "id": "h_driver",
+                "name": "Fewer transactions",
+                "description": "Fewer transactions directly reduced the measure.",
+                "category": "mechanism",
+                "confidence": 0.9,
+                "status": "supported",
+            },
+            {
+                "id": "h_cause",
+                "name": "Reduced availability",
+                "description": "Availability may have reduced transactions.",
+                "category": "operations",
+                "confidence": 0.4,
+                "status": "active",
+            },
+        ],
+        evidence=[
+            {
+                "id": "ev_driver",
+                "description": "Transactions fell.",
+                "source": "records",
+                "relationship": "direct",
+                "basis": "direct",
+                "scope": "mechanism",
+                "confidence": 0.9,
+                "hypothesis_id": "h_driver",
+                "claim_id": "h_driver",
+                "hypothesis_ids": ["h_driver"],
+            },
+        ],
+    )
+    engine = InvestigationEngine(DatasourceRegistry(), llm=FinishWithUntestedCauseLLM())
+
+    result = await engine._decide(state)
+
+    assert result["next_action"] == "continue"
 
 
 @pytest.mark.asyncio
@@ -657,6 +712,30 @@ class FakeRegistry:
         return []
 
 
+def test_schema_discovered_categorical_values_reject_an_invented_filter() -> None:
+    source = {
+        "tables": [
+            {
+                "name": "public.activity",
+                "columns": [
+                    {"name": "fulfilment_path", "representative_values": ["counter", "website"]},
+                ],
+            },
+        ],
+    }
+
+    with pytest.raises(UnsafeQueryError, match="known values are .*counter.*website"):
+        InvestigationEngine._validate_categorical_filter_values(
+            "SELECT * FROM public.activity WHERE LOWER(fulfilment_path) IN ('in-person', 'physical')",
+            source,
+        )
+
+    InvestigationEngine._validate_categorical_filter_values(
+        "SELECT * FROM public.activity WHERE fulfilment_path ILIKE '%counter%'",
+        source,
+    )
+
+
 class CachedSchemaRegistry(FakeRegistry):
     def __init__(self) -> None:
         super().__init__()
@@ -699,6 +778,14 @@ class VocabularyDatasource:
         return [{"value": "Outdoor"}]
 
 
+class CategoricalVocabularyDatasource(VocabularyDatasource):
+    async def execute_read_query(self, query: str) -> list[dict[str, object]]:
+        self.queries.append(query)
+        if "ranked_values" in query:
+            return [{"column_name": "descriptor", "value": "Outdoor"}]
+        return [{"value": "Outdoor"}]
+
+
 class VocabularyRegistry:
     def __init__(self) -> None:
         self.source = VocabularyDatasource()
@@ -725,6 +812,12 @@ class VocabularyRegistry:
 
     def approved_cross_relations(self, datasource_ids: list[str]) -> list[CrossDatasourceRelation]:
         return []
+
+
+class CategoricalVocabularyRegistry(VocabularyRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.source = CategoricalVocabularyDatasource()
 
 
 class VocabularyClarificationLLM:
@@ -754,6 +847,25 @@ async def test_question_understanding_resolves_a_quoted_term_from_any_text_dimen
     assert registry.source.queries == [
         'SELECT DISTINCT "descriptor" AS value FROM "public"."lookup_a" WHERE "descriptor" IS NOT NULL LIMIT 51'
     ]
+
+
+@pytest.mark.asyncio
+async def test_categorical_vocabulary_is_loaded_once_per_schema_version() -> None:
+    registry = CategoricalVocabularyRegistry()
+    engine = InvestigationEngine(registry)  # type: ignore[arg-type]
+    state = InvestigationState(
+        investigation_id="inv_categorical_cache",
+        question="Why did the measure change?",
+        datasources=[registry.source.summary],
+    )
+
+    first = await engine._metadata_payload(state, include_categorical_values_for={"source"})
+    second = await engine._metadata_payload(state, include_categorical_values_for={"source"})
+
+    assert first[0]["tables"][0]["columns"][0]["representative_values"] == ["Outdoor"]
+    assert second == first
+    assert len(registry.source.queries) == 1
+    assert "ranked_values" in registry.source.queries[0]
 
 
 class MeasureFirstClarificationLLM:
@@ -2427,6 +2539,52 @@ def test_premise_contract_keeps_baseline_evidence_out_of_hypothesis_trees() -> N
     assert affected == set()
 
 
+def test_hypothesis_baseline_evidence_stays_with_its_selected_hypothesis() -> None:
+    state = InvestigationState.model_validate({
+        "investigation_id": "inv_hypothesis_baseline_evidence",
+        "question": "Why did sales fall?",
+        "datasources": [],
+        "hypotheses": [{"id": "h1", "name": "Store visits", "description": "Visits fell", "category": "generic", "confidence": 0.4}],
+        "observations": [{
+            "description": "Compare visits before and after.",
+            "source": "analytics",
+            "value": {
+                "hypothesis_id": "h1",
+                "requirement_id": "h1:r1",
+                "evidence_contract": {"role": "baseline", "basis": "direct"},
+            },
+        }],
+    })
+    assessment = EvidenceAssessment.model_validate({
+        "evidence": [{
+            "id": "visits",
+            "description": "Store visits were lower in the later period.",
+            "source": "analytics",
+            "relationship": "supporting",
+            "scope": "premise",
+            "confidence": 0.9,
+        }],
+        "hypotheses": [],
+        "confidence": 0.9,
+    })
+
+    evidence, affected = InvestigationEngine._scope_evidence(state, assessment)
+
+    assert evidence[0].scope == "mechanism"
+    assert evidence[0].hypothesis_id == "h1"
+    assert evidence[0].requirement_id == "h1:r1"
+    assert evidence[0].hypothesis_ids == ["h1"]
+    assert affected == {"h1"}
+
+
+def test_before_after_rows_use_decimal_rate_calculation_for_integer_totals() -> None:
+    rows = InvestigationEngine._normalize_before_after_rows([
+        {"earlier_value": 60666, "later_value": 24611, "rate_change_percent": 0},
+    ])
+
+    assert rows[0]["rate_change_percent"] == pytest.approx(-59.43, abs=0.01)
+
+
 def test_query_cache_is_scoped_to_the_final_sql_and_source_schema_version() -> None:
     engine = InvestigationEngine(DatasourceRegistry())
     sql = "SELECT revenue FROM sales_events WHERE occurred_at >= DATE '2024-07-01'"
@@ -2513,7 +2671,7 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
                 "relationship": "direct",
                 "confidence": 0.9,
                 "hypothesis_ids": ["hyp_demand"],
-                "data": [{"field": "measured_metric_percentage_change", "value": -0.09}],
+                "data": [{"field": "rate_change_percent", "value": -0.09}],
             }],
         }
     )
@@ -2523,8 +2681,43 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
 
     assert decision["next_action"] == "finish"
     assert result["final_analysis"].likely_root_cause == "No meaningful overall change found"
-    assert "1.0% negligibility threshold" in result["final_analysis"].summary
+    assert "1.00% negligibility threshold" in result["final_analysis"].summary
     assert result["conversation_turns"][-1].question == state.question
+
+
+def test_final_analysis_uses_relative_percentages_and_downgrades_an_incomplete_causal_claim() -> None:
+    hypothesis = Hypothesis.model_validate({
+        "id": "hyp_driver",
+        "name": "An immediate driver",
+        "description": "A measured immediate driver changed the outcome.",
+        "category": "generic",
+        "confidence": 0.9,
+        "status": "supported",
+        "requirements": [{"id": "hyp_driver:r1", "description": "Verify the upstream cause.", "status": "pending"}],
+    })
+    analysis = FinalAnalysis(
+        likely_root_cause="The measured driver changed.",
+        confidence=0.9,
+        evidence=[],
+        rejected_hypotheses=[],
+        external_findings=[],
+        caveats=[],
+        summary="The rate fell by -25 percent from 20% to 15%.",
+    )
+
+    state = InvestigationState(
+        investigation_id="inv_incomplete_driver",
+        question="Why did the measure change?",
+        datasources=[],
+        hypotheses=[hypothesis],
+    )
+    bounded = InvestigationEngine._bound_conclusion_level(analysis, state, [hypothesis])
+    normalized = InvestigationEngine._normalize_analysis_presentation(bounded)
+
+    assert normalized.conclusion_level == "proximate_driver"
+    assert "-25.00%" in normalized.summary
+    assert "20.00%" in normalized.summary
+    assert "percentage points" not in normalized.summary
 
 
 def test_rejected_premise_does_not_request_a_second_baseline_check() -> None:
@@ -2643,6 +2836,22 @@ class CommentRepairingLLM:
             return QueryPlan(sql="/* initial explanatory note */ SELECT revenue FROM sales_events", purpose="Measure revenue")
         assert payload["rejection_reason"] == "SQL comments are not allowed"
         assert "Do not include SQL comments" in instruction
+        return QueryPlan(sql="SELECT revenue FROM sales_events", purpose="Measure revenue")
+
+
+class SyntaxRepairingLLM:
+    """The retry must happen before an invalid planner query touches a datasource."""
+
+    def __init__(self) -> None:
+        self.query_calls = 0
+
+    async def structured(self, response_model, instruction: str, payload: dict):
+        assert response_model is QueryPlan
+        self.query_calls += 1
+        if self.query_calls == 1:
+            return QueryPlan(sql="SELECT CASE WHEN ( THEN revenue END FROM sales_events", purpose="Measure revenue")
+        assert "Invalid SQL:" in payload["rejection_reason"]
+        assert "Ensure every parenthesis is balanced" in instruction
         return QueryPlan(sql="SELECT revenue FROM sales_events", purpose="Measure revenue")
 
 
@@ -2804,6 +3013,29 @@ async def test_execute_repairs_a_query_rejected_for_sql_comments() -> None:
     engine = InvestigationEngine(registry, llm=CommentRepairingLLM())
     state = InvestigationState(
         investigation_id="inv_comment_retry",
+        question="Why did revenue fall?",
+        datasources=[registry.source.summary],
+        pending_step={
+            "hypothesis_id": "hypothesis",
+            "action": "compare revenue",
+            "datasource_id": "analytics",
+            "rationale": "test the leading hypothesis",
+        },
+    )
+
+    result = await engine._execute(state)
+
+    assert engine.llm.query_calls == 2
+    assert registry.source.queries == ["SELECT revenue FROM sales_events LIMIT 500"]
+    assert result["pending_step"].query == "SELECT revenue FROM sales_events LIMIT 500"
+
+
+@pytest.mark.asyncio
+async def test_execute_repairs_invalid_planner_sql_before_querying_the_datasource() -> None:
+    registry = FakeRegistry()
+    engine = InvestigationEngine(registry, llm=SyntaxRepairingLLM())
+    state = InvestigationState(
+        investigation_id="inv_syntax_retry",
         question="Why did revenue fall?",
         datasources=[registry.source.summary],
         pending_step={

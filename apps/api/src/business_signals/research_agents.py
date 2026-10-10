@@ -14,7 +14,9 @@ from string import Formatter
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+from business_signals.config import settings
 
 AgentId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{1,62}$")]
 TemplateValue = Annotated[str, StringConstraints(min_length=1, max_length=1000)]
@@ -135,7 +137,12 @@ class JsonResponse(BaseModel):
     no_result_observation_template: TemplateValue | None = None
     source_title_template: TemplateValue = "{agent_name}"
     source_url_template: TemplateValue | None = None
-    confidence: float = Field(default=0.65, ge=0, le=1)
+    source_reliability: float = Field(
+        default_factory=lambda: settings.source_reliability_default,
+        ge=0,
+        le=1,
+        validation_alias=AliasChoices("source_reliability", "confidence"),
+    )
     relationship: Literal["supporting", "correlated", "contradicting"] = "correlated"
     relevance_selection: RelevanceSelection | None = None
 
@@ -255,7 +262,12 @@ class PipelineOutput(BaseModel):
 
     observation_template: TemplateValue
     source_title_template: TemplateValue = "{agent_name}"
-    confidence: float = Field(default=0.65, ge=0, le=1)
+    source_reliability: float = Field(
+        default_factory=lambda: settings.source_reliability_default,
+        ge=0,
+        le=1,
+        validation_alias=AliasChoices("source_reliability", "confidence"),
+    )
     relationship: Literal["supporting", "correlated", "contradicting"] = "correlated"
 
 

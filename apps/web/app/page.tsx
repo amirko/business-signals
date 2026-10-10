@@ -35,7 +35,15 @@ type Evidence = {
   scope?: 'premise' | 'mechanism' | 'caveat' | string;
   data?: EvidenceDataPoint[];
 };
-type FinalAnalysis = { likely_root_cause: string | null; confidence: number; summary: string; caveats: string[]; evidence?: Evidence[]; follow_up_question?: string | null };
+type FinalAnalysis = {
+  likely_root_cause: string | null;
+  conclusion_level?: 'underlying_cause' | 'proximate_driver' | 'undetermined';
+  confidence: number;
+  summary: string;
+  caveats: string[];
+  evidence?: Evidence[];
+  follow_up_question?: string | null;
+};
 type InvestigationEvent = { id: string; type: string; message: string; data: Record<string, unknown> };
 type Clarification = { question: string; response?: string; hypothesisId?: string };
 type ConversationTurn = { question: string; answer: FinalAnalysis; created_at: string };
@@ -102,6 +110,28 @@ const investigationStepLabels: Record<string, string> = {
 
 const defaultQuestion = 'Why did unit sales of Shell Jacket 001, Trail Backpack 006, Day Pack 011, and Rain Cover 016 in northern Italian stores fall after July 14, 2024?';
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function finalAnalysisLabel(analysis: FinalAnalysis): string {
+  if (analysis.conclusion_level === 'proximate_driver') return 'FINAL ANALYSIS · LIKELY IMMEDIATE DRIVER';
+  if (analysis.conclusion_level === 'underlying_cause') return 'FINAL ANALYSIS · LIKELY UNDERLYING CAUSE';
+  return 'FINAL ANALYSIS';
+}
+
+function formatReportDataPoint(point: EvidenceDataPoint): string {
+  if (point.value === null) return 'Not available';
+  if (typeof point.value === 'number' && /(?:percent|percentage|pct)$/i.test(point.field)) {
+    return `${point.value.toFixed(2)}%`;
+  }
+  return String(point.value);
+}
+
+function reportDataLabel(field: string): string {
+  return field.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 class ClientErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
 
@@ -134,8 +164,8 @@ function ReportData({ evidence }: { evidence?: Evidence[] }) {
       <table>
         <thead><tr><th scope="col">Result</th><th scope="col">Value</th></tr></thead>
         <tbody>{item.data?.map((point, index) => <tr key={`${point.field}-${index}`}>
-          <th scope="row">{point.field}</th>
-          <td>{point.value === null ? 'Not available' : String(point.value)}</td>
+          <th scope="row">{reportDataLabel(point.field)}</th>
+          <td>{formatReportDataPoint(point)}</td>
         </tr>)}</tbody>
       </table>
     </div>)}
@@ -876,7 +906,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
         </section>}
         {premiseEvidence.length > 0 && <section className="premise-validation" aria-label="Baseline validation">
           <span className="section-kicker">BASELINE CHECK</span><h2>Did the reported change occur?</h2>
-          {premiseEvidence.map((item) => <article className="premise-evidence" key={item.id}><code>{item.id}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}
+          {premiseEvidence.map((item, index) => <article className="premise-evidence" key={item.id}><code aria-label={`Evidence ${index + 1}`}>E{index + 1}</code><div><span>{item.relationship} evidence · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}
         </section>}
 
         <div className="timeline-heading">
@@ -926,7 +956,7 @@ function InvestigationView({ question, setQuestion, datasources, resumedInvestig
         </div>
         {error && <output className="notice investigation-error">{error}</output>}
         {statusMessage && <output className="notice">{statusMessage}</output>}
-        {finalAnalysis && <article className="final-result"><span className="section-kicker">FINAL ANALYSIS</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><ReportText>{finalAnalysis.summary}</ReportText><ReportData evidence={finalAnalysis.evidence} /><span className="source-chip">{Math.round(finalAnalysis.confidence * 100)}% confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}{!clarificationQuestion && <section className="follow-up-prompt"><p>Would you like to know more?</p><form onSubmit={(event) => { event.preventDefault(); void submitFollowUp(followUpResponse); }}><Textarea value={followUpResponse} onChange={(event) => setFollowUpResponse(event.target.value)} placeholder="Ask a follow-up question…" rows={3} /><div><Button type="submit" disabled={!followUpResponse.trim()}>Submit <ArrowRight /></Button><Button type="button" variant="outline" onClick={() => void submitFollowUp('No thanks')}>Stop</Button></div></form></section>}</article>}
+        {finalAnalysis && <article className="final-result"><span className="section-kicker">{finalAnalysisLabel(finalAnalysis)}</span><h2>{finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}</h2><ReportText>{finalAnalysis.summary}</ReportText><ReportData evidence={finalAnalysis.evidence} /><span className="source-chip">{formatPercent(finalAnalysis.confidence)} confidence</span>{finalAnalysis.caveats.map((caveat) => <p className="final-caveat" key={caveat}>{caveat}</p>)}{!clarificationQuestion && <section className="follow-up-prompt"><p>Would you like to know more?</p><form onSubmit={(event) => { event.preventDefault(); void submitFollowUp(followUpResponse); }}><Textarea value={followUpResponse} onChange={(event) => setFollowUpResponse(event.target.value)} placeholder="Ask a follow-up question…" rows={3} /><div><Button type="submit" disabled={!followUpResponse.trim()}>Submit <ArrowRight /></Button><Button type="button" variant="outline" onClick={() => void submitFollowUp('No thanks')}>Stop</Button></div></form></section>}</article>}
         {!investigationId && <div className="question-card">
           <label htmlFor="question">Business question</label>
           <Textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} />
@@ -1342,7 +1372,7 @@ function SavedInvestigationsView({ onSavedRunCount, navigationKey, onResume }: {
       {selected.conversation_turns.length === 0 && <><section><h3>Conversation</h3><article className="conversation-turn conversation-question conversation-question-pending"><small>QUESTION</small><p>{selected.current_conversation_question ?? selected.original_question ?? selected.question}</p></article>{selected.pending_human_question && <article className="saved-detail-item conversation-feedback conversation-pending"><code>Q{selected.human_feedback.length + 1}</code><div><small>AWAITING YOUR ANSWER</small><p>{selected.pending_human_question}</p><Button size="sm" onClick={() => onResume(selected)}><Play /> Continue in workbench</Button></div></article>}</section>{selected.human_feedback.length > 0 && <section><h3>Clarifications</h3>{selected.human_feedback.map((item, index) => <article className="saved-detail-item" key={`${item.question}-${index}`}><code>Q{index + 1}</code><div><p>{item.question}</p><small>YOUR ANSWER</small><p className="saved-answer">{item.response}</p></div></article>)}</section>}</>}
       <section><h3>Hypotheses</h3>{selected.hypotheses.map((hypothesis, index) => <article className="saved-detail-item" key={hypothesis.id}><code>H{index + 1}</code><div><strong>{hypothesis.name}</strong><span>{hypothesis.status} · {Math.round(hypothesis.confidence * 100)}%</span><p>{hypothesis.description}</p></div></article>)}</section>
       <section><h3>Evidence</h3>{selected.evidence.map((item, index) => <article className="saved-detail-item" key={item.id}><code>E{index + 1}</code><div><span>{item.relationship} · {Math.round(item.confidence * 100)}%</span><p>{item.description}</p></div></article>)}{selected.evidence.length === 0 && <p className="saved-empty">No separate evidence was saved for this conversation.</p>}</section>
-      {selected.conversation_turns.length === 0 && selected.final_analysis && <section className="saved-conclusion"><h3>Conclusion</h3><h4>{selected.final_analysis.likely_root_cause ?? 'Insufficient evidence'}</h4><ReportText>{selected.final_analysis.summary}</ReportText><ReportData evidence={selected.final_analysis.evidence} /><span>{Math.round(selected.final_analysis.confidence * 100)}% confidence</span>{selected.final_analysis.caveats.map((caveat) => <p className="saved-caveat" key={caveat}>{caveat}</p>)}</section>}
+      {selected.conversation_turns.length === 0 && selected.final_analysis && <section className="saved-conclusion"><h3>{finalAnalysisLabel(selected.final_analysis)}</h3><h4>{selected.final_analysis.likely_root_cause ?? 'Insufficient evidence'}</h4><ReportText>{selected.final_analysis.summary}</ReportText><ReportData evidence={selected.final_analysis.evidence} /><span>{formatPercent(selected.final_analysis.confidence)} confidence</span>{selected.final_analysis.caveats.map((caveat) => <p className="saved-caveat" key={caveat}>{caveat}</p>)}</section>}
     </article>
   </section>;
 

@@ -220,24 +220,25 @@ class ParallelResearchFixture:
         )
 
 
-class ParallelResearchPlanningLLM:
+class SequentialResearchPlanningLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def structured(self, response_model, _instruction: str, payload: dict[str, object]) -> ExternalResearchPlans:
         assert response_model is ExternalResearchPlans
-        assert payload["maximum_checks"] == 2
+        assert payload["maximum_checks"] == 1
+        agent_id = "weather" if self.calls == 0 else "guardian-news"
+        self.calls += 1
         return ExternalResearchPlans(plans=[
             ExternalResearchPlan(
-                hypothesis_name="External conditions", agent_id="weather", subject="Milan",
+                hypothesis_name="External conditions", agent_id=agent_id, subject="Milan",
                 start_date="2024-07-01", end_date="2024-07-31", rationale="Check local weather.",
-            ),
-            ExternalResearchPlan(
-                hypothesis_name="External conditions", agent_id="guardian-news", subject="Milan",
-                start_date="2024-07-01", end_date="2024-07-31", rationale="Check local events.",
             ),
         ])
 
 
 @pytest.mark.asyncio
-async def test_external_research_runs_each_relevant_configured_agent_concurrently() -> None:
+async def test_external_research_runs_one_check_per_selection_so_each_result_can_be_interpreted() -> None:
     researcher = ParallelResearchFixture()
 
     async def emit(_state: InvestigationState, _event_type: str, _message: str, **_data: object) -> None:
@@ -245,7 +246,7 @@ async def test_external_research_runs_each_relevant_configured_agent_concurrentl
 
     coordinator = ExternalResearchCoordinator(
         researcher=researcher,  # type: ignore[arg-type]
-        llm=ParallelResearchPlanningLLM(),  # type: ignore[arg-type]
+        llm=SequentialResearchPlanningLLM(),  # type: ignore[arg-type]
         emit=emit,
         state_payload=lambda _state: {},
         resolve_hypothesis_name=lambda _name, _state: "hyp_external",
@@ -261,12 +262,14 @@ async def test_external_research_runs_each_relevant_configured_agent_concurrentl
         hypothesis_name_index={"external conditions": "hyp_external"},
     )
 
-    selected = await coordinator.select(state)
-    completed = await coordinator.execute(state.model_copy(update=selected))
+    first_selected = await coordinator.select(state)
+    first_completed = await coordinator.execute(state.model_copy(update=first_selected))
+    second_selected = await coordinator.select(state.model_copy(update=first_completed))
+    completed = await coordinator.execute(state.model_copy(update={**first_completed, **second_selected}))
 
     assert completed["external_call_count"] == 2
     assert [finding.type for finding in completed["external_findings"]] == ["weather", "guardian-news"]
-    assert researcher.maximum_active == 2
+    assert researcher.maximum_active == 1
 
 
 def test_external_agents_are_selected_by_semantic_evidence_topics() -> None:

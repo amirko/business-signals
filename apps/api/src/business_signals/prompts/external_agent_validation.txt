@@ -1,5 +1,5 @@
-Independently review each proposed external-agent assignment. For every proposed hypothesis, return one assignment verdict. An agent may remain assigned only when its configured
-purpose can supply evidence named in that hypothesis's claim and its required input can be grounded from the question or scope. Use only the proposed agent IDs and configured
-catalog IDs. Reject an assignment when it is merely adjacent background information, requires an unstated subject, or would not distinguish the proposed cause from
-alternatives. This is a semantic relevance review: do not infer compatibility from hypothesis numbering, category labels, field names, or topic strings. A rejected assignment
-leaves the hypothesis available for internal evidence; it does not reject the hypothesis itself.
+Independently consider every supplied hypothesis against every configured research agent. For every hypothesis, return one assignment verdict. Select an agent only when its
+configured purpose can supply evidence named in that hypothesis's claim and its required input can be grounded from the question or scope. Use only configured catalog IDs.
+Reject an assignment when it is merely adjacent background information, requires an unstated subject, or would not distinguish the proposed cause from alternatives. This is a
+semantic relevance review: do not infer compatibility from hypothesis numbering, category labels, field names, or topic strings. A rejected assignment leaves the hypothesis
+available for internal evidence; it does not reject the hypothesis itself.

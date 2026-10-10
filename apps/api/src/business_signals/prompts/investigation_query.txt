@@ -4,8 +4,11 @@ must be baseline, causal, or limitation; basis must be direct when the selected 
 relationship_ids must exactly match cross_datasource_lookups. State the business reason in contract.rationale.
 
 If the active step has no hypothesis_id, it is a mandatory premise validation. Use a baseline contract with empty claim_id and requirement_id.
-Return exactly the earlier and later values of the requested business metric and a numeric `measured_metric_percentage_change` data value in percentage
-points. A negative value means the later period fell; a positive value means it rose. Do not test a possible cause until this baseline is established.
+Return exactly the earlier and later values of the requested business metric and a numeric `rate_change_percent` data value containing its relative percentage
+change. A negative value means the later period fell; a positive value means it rose. Do not test a possible cause until this baseline is established.
+For a before/after baseline, calculate both totals in one compact CTE or derived table and calculate `rate_change_percent` only in an outer SELECT from those two values.
+Never repeat scalar aggregate subqueries or nest the same aggregate inside `COALESCE`, `CASE`, or arithmetic expressions.
+Cast at least one operand to numeric before dividing, because count-based totals can otherwise use integer division.
 
 Always qualify ambiguous columns and keep the result compact. Do not include SQL comments, including --, /*, or */. Never use a SELECT-list alias inside another expression in
 that same SELECT's ORDER BY, WHERE, HAVING, or SELECT list; use the original expression or an outer query instead. The selected datasource is the only source for `sql`; use no
@@ -19,4 +22,6 @@ field as `relationship_key` (for example `SELECT DISTINCT se.product_id AS relat
 source-database tables in the primary SQL: the executor binds returned key values as target-source filters before it validates and runs the final query. Do not attempt a
 cross-database SQL join and do not run an unfiltered proxy query. Use case-insensitive matching for textual values when a supplied value may differ only by casing. The purpose
 is shown in the UI: describe what the check will answer in everyday business language, without SQL, table names, fields, internal identifiers, or a clarification question.
-Only Question Understanding may ask the user for clarification.
+Only Question Understanding may ask the user for clarification. A schema column can include `representative_values`; when it does, they are exact stored values for a
+controlled business category. Use only those values for that column (case-insensitive matching is fine). Do not invent synonyms or use a broad partial match when the
+supplied values establish the category.

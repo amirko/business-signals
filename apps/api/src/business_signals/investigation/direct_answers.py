@@ -192,6 +192,140 @@ class DirectAnswerMixin:
         return statement.sql(dialect="postgres")
 
     @staticmethod
+    def _normalize_before_after_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Calculate standard before/after rates outside SQL type semantics.
+
+        Query planners may correctly return integer totals yet accidentally use
+        PostgreSQL integer division for the derived rate. The two totals are
+        the authoritative facts, so normalize only this documented result shape
+        using decimal arithmetic before evidence or a user-facing answer sees it.
+        """
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not {"earlier_value", "later_value"}.issubset(row):
+                normalized.append(row)
+                continue
+            try:
+                earlier = Decimal(str(row["earlier_value"]))
+                later = Decimal(str(row["later_value"]))
+            except (InvalidOperation, ValueError, TypeError):
+                normalized.append(row)
+                continue
+            updated = dict(row)
+            updated["rate_change_percent"] = (
+                None if earlier == 0 else float((later - earlier) * Decimal("100") / earlier)
+            )
+            normalized.append(updated)
+        return normalized
+
+    @staticmethod
+    def _validate_categorical_filter_values(sql: str, source_metadata: dict[str, Any]) -> None:
+        """Reject made-up values for schema-discovered controlled vocabularies.
+
+        Values are checked only for fields with a finite, discovered vocabulary.
+        This remains independent of names such as ``channel`` or ``region``.
+        """
+        try:
+            statement = sqlglot.parse_one(sql, read="postgres")
+        except sqlglot.errors.ParseError as exc:
+            raise UnsafeQueryError(f"Invalid SQL: {exc}") from exc
+
+        known_by_table: dict[str, dict[str, set[str]]] = {}
+        column_tables: dict[str, set[str]] = {}
+        for table in source_metadata.get("tables", []):
+            table_name = str(table.get("name", ""))
+            known_columns: dict[str, set[str]] = {}
+            for column in table.get("columns", []):
+                values = {
+                    str(value).casefold()
+                    for value in column.get("representative_values", [])
+                    if isinstance(value, str)
+                }
+                if values:
+                    column_name = str(column.get("name", ""))
+                    known_columns[column_name] = values
+                    column_tables.setdefault(column_name, set()).add(table_name)
+            if known_columns:
+                known_by_table[table_name] = known_columns
+        if not known_by_table:
+            return
+
+        aliases: dict[str, str] = {}
+        cte_names = {cte.alias_or_name for cte in statement.find_all(exp.CTE)}
+        for table in statement.find_all(exp.Table):
+            if table.name in cte_names:
+                continue
+            table_name = f"{table.db}.{table.name}" if table.db else table.name
+            matching = next(
+                (candidate for candidate in known_by_table if candidate == table_name or candidate.rsplit(".", 1)[-1] == table_name),
+                None,
+            )
+            if matching:
+                aliases[table.alias_or_name] = matching
+                aliases[table.name] = matching
+
+        def column_for(expression: exp.Expression) -> exp.Column | None:
+            if isinstance(expression, exp.Column):
+                return expression
+            columns = list(expression.find_all(exp.Column))
+            return columns[0] if len(columns) == 1 else None
+
+        def known_values(column: exp.Column) -> tuple[str, set[str]] | None:
+            table_name = aliases.get(column.table) if column.table else None
+            if table_name is None:
+                candidates = list(column_tables.get(column.name, set()))
+                table_name = candidates[0] if len(candidates) == 1 else None
+            if table_name is None:
+                return None
+            values = known_by_table.get(table_name, {}).get(column.name)
+            return (f"{table_name}.{column.name}", values) if values else None
+
+        def literal_values(expression: exp.Expression) -> list[str]:
+            return [str(expression.this)] if isinstance(expression, exp.Literal) and expression.is_string else []
+
+        checks: list[tuple[exp.Column, list[str]]] = []
+        for expression in statement.walk():
+            if isinstance(expression, (exp.EQ, exp.ILike)):
+                left, right = expression.this, expression.expression
+                left_column, right_column = column_for(left), column_for(right)
+                if left_column is not None:
+                    checks.append((left_column, literal_values(right)))
+                elif right_column is not None:
+                    checks.append((right_column, literal_values(left)))
+            elif isinstance(expression, exp.In):
+                column = column_for(expression.this)
+                if column is not None:
+                    checks.append((column, [
+                        str(value.this) for value in expression.expressions
+                        if isinstance(value, exp.Literal) and value.is_string
+                    ]))
+
+        invalid: dict[str, tuple[list[str], set[str]]] = {}
+        for column, values in checks:
+            known = known_values(column)
+            if known is None or not values:
+                continue
+            field, permitted = known
+            unsupported = []
+            for value in values:
+                candidate = value.casefold()
+                if candidate in permitted:
+                    continue
+                pattern = candidate.strip("%")
+                if pattern and any(pattern in permitted_value for permitted_value in permitted):
+                    continue
+                unsupported.append(value)
+            if unsupported:
+                previous = invalid.get(field)
+                invalid[field] = ([*(previous[0] if previous else []), *unsupported], permitted)
+        if invalid:
+            details = "; ".join(
+                f"{field} used {sorted(set(values))}; known values are {sorted(permitted)}"
+                for field, (values, permitted) in sorted(invalid.items())
+            )
+            raise UnsafeQueryError(f"Query uses values not present in the discovered controlled vocabulary: {details}")
+
+    @staticmethod
     def _has_unavailable_aggregate_result(result: Any) -> bool:
         """Recognize a SQL aggregate over no attributable records without presenting it as zero."""
         if not isinstance(result, dict) or not isinstance(result.get("rows"), list):
@@ -330,6 +464,23 @@ class DirectAnswerMixin:
             )
         if self._defers_datasource_selection(plan):
             raise UnsafeQueryError("Direct-answer planner attempted to defer datasource selection")
+        selected_source_ids = {
+            query.datasource_id
+            for query in [
+                DirectAnswerQuery(datasource_id=plan.datasource_id, sql=plan.sql, purpose=plan.purpose),
+                *plan.supporting_queries,
+            ]
+            if (
+                query.datasource_id in {source.id for source in state.datasources}
+                and re.search(r"'(?:[^']|'')*'", query.sql) is not None
+            )
+        }
+        if selected_source_ids:
+            # Query planning is already complete, so enrich just the selected
+            # sources before the execution guardrail (and any repair prompt).
+            metadata = await self._metadata_payload(
+                state, include_categorical_values_for=selected_source_ids
+            )
         missing_lookup_relation = self._requested_relation_without_lookup(state, plan)
         if missing_lookup_relation is not None:
             logger.warning("Direct-answer plan omitted a requested readable lookup: relation=%s", missing_lookup_relation.id)
@@ -967,6 +1118,7 @@ class DirectAnswerMixin:
                     self._bind_trusted_entity_references(state, query)
                 )
                 safe_sql = validate_query_tables(validate_read_query(bound_sql), allowed_tables)
+                self._validate_categorical_filter_values(safe_sql, source_metadata)
                 purpose = self._safe_direct_answer_text(query.purpose)
                 if safe_sql != query.sql:
                     logger.info(
@@ -979,6 +1131,7 @@ class DirectAnswerMixin:
                     logger.info("Direct-answer query prepared: datasource=%s sql=%s", query.datasource_id, safe_sql)
                 await self._emit(state, "QueryStarted", purpose, datasource_id=query.datasource_id)
                 rows = await self.registry.get(query.datasource_id).execute_read_query(safe_sql)
+                rows = self._normalize_before_after_rows(rows)
                 logger.info(
                     "Direct-answer query completed: datasource=%s rows=%d purpose=%s",
                     query.datasource_id,

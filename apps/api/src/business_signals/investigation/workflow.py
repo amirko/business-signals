@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -99,6 +100,10 @@ class InvestigationEngine(DirectAnswerMixin):
         # still refreshing automatically when the registry receives new
         # metadata (for example through an explicit schema refresh).
         self._schema_payload_cache: dict[str, tuple[str, dict[str, Any]]] = {}
+        # Controlled vocabularies are fetched once per engine/schema version.
+        # They are deliberately separate from the structural schema cache: a
+        # text field with many values is not useful as a categorical enum.
+        self._categorical_value_cache: dict[tuple[str, str, str, str], list[str]] = {}
         self.external_research = ExternalResearchCoordinator(
             self.researcher,
             self.llm,
@@ -234,7 +239,12 @@ class InvestigationEngine(DirectAnswerMixin):
                 )
             )
 
-    async def _metadata_payload(self, state: InvestigationState) -> list[dict[str, Any]]:
+    async def _metadata_payload(
+        self,
+        state: InvestigationState,
+        *,
+        include_categorical_values_for: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
         trusted_relationships = [
             relation.model_dump(mode="json")
@@ -254,6 +264,7 @@ class InvestigationEngine(DirectAnswerMixin):
                     "id": summary.id,
                     "name": summary.name,
                     "type": summary.type,
+                    "fingerprint": metadata.fingerprint,
                     "tables": [
                         {
                             "name": f"{table.schema_name}.{table.name}",
@@ -278,7 +289,98 @@ class InvestigationEngine(DirectAnswerMixin):
                     "trusted_cross_datasource_relationships": trusted_relationships,
                 }
             )
-        return payload
+        if not include_categorical_values_for:
+            return payload
+        enriched = copy.deepcopy(payload)
+        for source in enriched:
+            if source["id"] not in include_categorical_values_for:
+                continue
+            await self._add_categorical_values(source)
+        return enriched
+
+    async def _add_categorical_values(self, source: dict[str, Any]) -> None:
+        """Attach small, cached text vocabularies to the planner's schema input.
+
+        This is schema-driven, not a list of business fields: any non-key text
+        column is sampled, and only a column with at most the configured number
+        of distinct values is exposed as a controlled vocabulary.
+        """
+        datasource_id = str(source["id"])
+        fingerprint = str(source.get("fingerprint", ""))
+        limit = settings.schema_categorical_value_limit
+        relationship_fields = {
+            field
+            for relation in source.get("trusted_cross_datasource_relationships", [])
+            for endpoint, field in (
+                (relation.get("source_datasource"), relation.get("source_field")),
+                (relation.get("target_datasource"), relation.get("target_field")),
+            )
+            if endpoint == datasource_id and isinstance(field, str)
+        }
+        for table in source.get("tables", []):
+            table_name = str(table.get("name", ""))
+            if "." not in table_name:
+                continue
+            schema_name, bare_table_name = table_name.split(".", 1)
+            table_sql = ".".join((
+                self._quoted_discovered_identifier(schema_name),
+                self._quoted_discovered_identifier(bare_table_name),
+            ))
+            text_dimensions = set(table.get("roles", {}).get("text_dimensions", []))
+            pending: list[tuple[dict[str, Any], tuple[str, str, str, str]]] = []
+            for column in table.get("columns", []):
+                column_name = str(column.get("name", ""))
+                field_name = f"{table_name}.{column_name}"
+                if column_name not in text_dimensions or field_name in relationship_fields:
+                    continue
+                cache_key = (datasource_id, fingerprint, table_name, column_name)
+                values = self._categorical_value_cache.get(cache_key)
+                if values is None:
+                    existing = column.get("representative_values", [])
+                    if existing:
+                        values = [str(value) for value in existing if isinstance(value, str)]
+                        self._categorical_value_cache[cache_key] = values
+                    else:
+                        pending.append((column, cache_key))
+                if values:
+                    column["representative_values"] = values
+            if not pending:
+                continue
+            try:
+                values_sql = ", ".join(
+                    "('" + str(column["name"]) + "', "
+                    + self._quoted_discovered_identifier(str(column["name"])) + "::text)"
+                    for column, _ in pending
+                )
+                rows = await self.registry.get(datasource_id).execute_read_query(
+                    "WITH distinct_values AS ("
+                    "SELECT candidate.column_name, candidate.value FROM " + table_sql
+                    + " CROSS JOIN LATERAL (VALUES " + values_sql + ") AS candidate(column_name, value) "
+                    "WHERE candidate.value IS NOT NULL GROUP BY candidate.column_name, candidate.value"
+                    "), ranked_values AS ("
+                    "SELECT column_name, value, ROW_NUMBER() OVER (PARTITION BY column_name ORDER BY value) AS ordinal "
+                    "FROM distinct_values"
+                    ") SELECT column_name, value FROM ranked_values WHERE ordinal <= " + str(limit + 1)
+                )
+                values_by_column: dict[str, list[str]] = {}
+                for row in rows:
+                    column_name, value = row.get("column_name"), row.get("value")
+                    if isinstance(column_name, str) and isinstance(value, str):
+                        values_by_column.setdefault(column_name, []).append(value)
+                for column, cache_key in pending:
+                    values = values_by_column.get(str(column["name"]), [])
+                    self._categorical_value_cache[cache_key] = values if len(values) <= limit else []
+                    if values and len(values) <= limit:
+                        column["representative_values"] = values
+            except Exception:
+                logger.warning(
+                    "Controlled-vocabulary discovery failed: datasource=%s table=%s",
+                    datasource_id,
+                    table_name,
+                    exc_info=True,
+                )
+                for _, cache_key in pending:
+                    self._categorical_value_cache[cache_key] = []
 
     @classmethod
     def _schema_roles(cls, table: Any) -> dict[str, list[str]]:
@@ -381,13 +483,13 @@ class InvestigationEngine(DirectAnswerMixin):
             hypothesis_ids = list(dict.fromkeys(
                 hypothesis_id for hypothesis_id in evidence.hypothesis_ids if hypothesis_id in known_hypothesis_ids
             ))
-            if evidence.scope != "mechanism":
-                hypothesis_ids = []
             # Live results carry their owner from the selected requirement.
             # The evidence model may describe the result, but can never move
             # it to a different hypothesis. Legacy archives still use their
             # original claim fields below.
-            owner = observation_owner if evidence.scope == "mechanism" and observation_owner else evidence.claim_id
+            owner = observation_owner or (evidence.claim_id if evidence.scope == "mechanism" else None)
+            if observation_owner is None and evidence.scope != "mechanism":
+                hypothesis_ids = []
             # Older runs named their owner only through hypothesis_ids. A
             # single valid link is safe to migrate; ambiguous links are global
             # context, never duplicated causal proof.
@@ -409,11 +511,13 @@ class InvestigationEngine(DirectAnswerMixin):
                     }
                     if expected_topics and not expected_topics.intersection(actual_topics):
                         owner = None
-            if observation_owner and evidence.scope == "mechanism":
+            # A step's owner is authoritative. "baseline" can mean the
+            # baseline for a hypothesis; only an ownerless step validates the
+            # investigation premise. The evidence assessor cannot move a live
+            # result to another hypothesis or turn it into global context.
+            if observation_owner:
                 hypothesis_ids = [observation_owner]
             elif owner not in known_hypothesis_ids or len(hypothesis_ids) > 1:
-                owner = None
-            if evidence.scope != "mechanism":
                 owner = None
             if owner is None:
                 hypothesis_ids = []
@@ -427,13 +531,13 @@ class InvestigationEngine(DirectAnswerMixin):
             else:
                 basis = latest_contract.get("basis", evidence.basis)
                 relationship = evidence.relationship
-            if latest_contract.get("role") == "baseline":
+            if observation_owner is None and latest_contract.get("role") == "baseline":
                 owner = None
                 hypothesis_ids = []
                 scope = "premise"
+            elif observation_owner and latest_contract.get("role") == "baseline":
+                scope = "mechanism"
             elif latest_contract.get("role") == "limitation":
-                owner = None
-                hypothesis_ids = []
                 scope = "caveat"
             else:
                 scope = evidence.scope
@@ -666,7 +770,7 @@ class InvestigationEngine(DirectAnswerMixin):
         """
         changes: list[float] = []
         metric_percentage_field = re.compile(
-            r"(?:requested|measured)[ _-]*metric[ _-]*(?:percentage|percent|pct)[ _-]*(?:change|difference)"
+            r"(?:rate[ _-]*change[ _-]*percent|(?:requested|measured)[ _-]*metric[ _-]*(?:percentage|percent|pct)[ _-]*(?:change|difference))"
         )
         for item in evidence:
             if item.relationship != "direct" or (item.scope != "premise" and not item.hypothesis_ids):
@@ -706,6 +810,98 @@ class InvestigationEngine(DirectAnswerMixin):
     def _with_scope_caveats(cls, state: InvestigationState, analysis: FinalAnalysis) -> FinalAnalysis:
         additions = [item for item in cls._scope_caveats(state) if item not in analysis.caveats]
         return analysis.model_copy(update={"caveats": [*analysis.caveats, *additions]})
+
+    @staticmethod
+    def _format_report_percentages(text: str) -> str:
+        """Use one reader-facing convention for all relative changes in reports."""
+        pattern = re.compile(r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?:percentage points?|percent|%)", re.IGNORECASE)
+
+        def format_match(match: re.Match[str]) -> str:
+            return f"{float(match.group('value')):.{settings.report_percent_decimal_places}f}%"
+
+        return pattern.sub(format_match, text)
+
+    @classmethod
+    def _normalize_analysis_presentation(cls, analysis: FinalAnalysis) -> FinalAnalysis:
+        """Keep final prose and explicit rate-change values concise and unambiguous."""
+        def normalized_evidence(item: Evidence) -> Evidence:
+            data = [
+                point.model_copy(
+                    update={"value": round(point.value, settings.report_percent_decimal_places)}
+                )
+                if point.field.casefold() in {"measured_metric_percentage_change", "rate_change_percent"}
+                and isinstance(point.value, float)
+                else point
+                for point in item.data
+            ]
+            return item.model_copy(update={"description": cls._format_report_percentages(item.description), "data": data})
+
+        return analysis.model_copy(
+            update={
+                "likely_root_cause": (
+                    cls._format_report_percentages(analysis.likely_root_cause)
+                    if analysis.likely_root_cause else None
+                ),
+                "summary": cls._format_report_percentages(analysis.summary),
+                "caveats": [cls._format_report_percentages(item) for item in analysis.caveats],
+                "follow_up_question": (
+                    cls._format_report_percentages(analysis.follow_up_question)
+                    if analysis.follow_up_question else None
+                ),
+                "evidence": [normalized_evidence(item) for item in analysis.evidence],
+            }
+        )
+
+    @staticmethod
+    def _requirements_are_directly_complete(state: InvestigationState, hypothesis: Hypothesis) -> bool:
+        """Whether every planned fact needed for a claim has a completed direct check.
+
+        This evaluates workflow-owned requirement state rather than attempting
+        to infer causal completeness from a hypothesis label or topic.
+        """
+        if not hypothesis.requirements:
+            return False
+        return all(
+            requirement.status == "completed"
+            and any(
+                evidence.claim_id == hypothesis.id
+                and evidence.requirement_id == requirement.id
+                and evidence.scope == "mechanism"
+                and evidence.basis == "direct"
+                and evidence.relationship in {"direct", "supporting"}
+                for evidence in state.evidence
+            )
+            for requirement in hypothesis.requirements
+        )
+
+    @classmethod
+    def _bound_conclusion_level(
+        cls,
+        analysis: FinalAnalysis,
+        state: InvestigationState,
+        supported_hypotheses: list[Hypothesis],
+    ) -> FinalAnalysis:
+        """Do not allow synthesis prose to overstate the completed evidence.
+
+        A direct measurement can establish an immediate business driver while
+        leaving the upstream cause unproven. This distinction is generic: it
+        relies on the claim's own required evidence, not a fixed set of causes.
+        """
+        if analysis.likely_root_cause is None or not supported_hypotheses:
+            return analysis.model_copy(update={"conclusion_level": "undetermined"})
+        leading = max(supported_hypotheses, key=lambda hypothesis: hypothesis.confidence)
+        if cls._requirements_are_directly_complete(state, leading):
+            return analysis.model_copy(update={"conclusion_level": "underlying_cause"})
+        caveat = (
+            "The evidence identifies a likely immediate driver, but does not yet establish why that driver changed."
+        )
+        caveats = analysis.caveats if caveat in analysis.caveats else [*analysis.caveats, caveat]
+        return analysis.model_copy(
+            update={
+                "conclusion_level": "proximate_driver",
+                "caveats": caveats,
+            }
+        )
 
     async def _understand(self, state: InvestigationState) -> dict[str, Any]:
         await self._emit(state, "InvestigationStarted", "Investigation started")
@@ -988,15 +1184,24 @@ class InvestigationEngine(DirectAnswerMixin):
         language relevance cannot be reduced to fragile column names or a list
         of pre-named causal topics.
         """
-        proposed = [hypothesis for hypothesis in hypotheses if hypothesis.external_agent_ids]
-        if not proposed:
+        # The hypothesis planner is responsible for deciding whether external
+        # research is relevant at all. Once it identifies at least one
+        # externally testable claim, this independent verifier considers every
+        # claim against every configured agent. This keeps ordinary internal
+        # investigations on their existing path while avoiding a hard-coded
+        # causal-topic catalogue.
+        if (
+            not hypotheses
+            or not available_agents
+            or not any(hypothesis.research_scope == "external" or hypothesis.external_agent_ids for hypothesis in hypotheses)
+        ):
             return hypotheses
         result = await self.llm.structured(
             ExternalAgentAssignments,
             prompts.load("external_agent_validation"),
             {
                 "question": state.question,
-                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in proposed],
+                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in hypotheses],
                 "available_research_agents": available_agents,
                 "analysis_scope": state.analysis_scope.model_dump(mode="json") if state.analysis_scope else None,
             },
@@ -1015,7 +1220,7 @@ class InvestigationEngine(DirectAnswerMixin):
             selected = [
                 agent_id
                 for agent_id in assignment.agent_ids
-                if agent_id in known_agents and agent_id in hypothesis.external_agent_ids
+                if agent_id in known_agents
             ]
             if not assignment.valid or not selected:
                 logger.info(
@@ -1284,7 +1489,9 @@ class InvestigationEngine(DirectAnswerMixin):
         datasource_id = state.pending_step.datasource_id
         if datasource_id is None:
             raise RuntimeError("The selected investigation has no datasource")
-        metadata = await self._metadata_payload(state)
+        metadata = await self._metadata_payload(
+            state, include_categorical_values_for={datasource_id}
+        )
         metadata_by_id = {str(source["id"]): source for source in metadata}
         selected_datasource = metadata_by_id.get(datasource_id)
         if selected_datasource is None:
@@ -1336,6 +1543,7 @@ class InvestigationEngine(DirectAnswerMixin):
                     allowed_tables,
                 )
                 sql = validate_query_columns(sql, self._columns_by_table(selected_datasource))
+                self._validate_categorical_filter_values(sql, selected_datasource)
                 if must_measure_metric and metric_table and not query_references_table(sql, metric_table[1]):
                     raise UnsafeQueryError(f"Query must measure the reported metric from {metric_table[1]}")
                 (
@@ -1364,6 +1572,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 # database relation.
                 sql = validate_query_tables(sql, allowed_tables)
                 sql = validate_query_columns(sql, self._columns_by_table(selected_datasource))
+                self._validate_categorical_filter_values(sql, selected_datasource)
                 cached_result = self._cached_query_result(
                     state, datasource_id, selected_datasource.get("fingerprint"), sql
                 )
@@ -1389,6 +1598,7 @@ class InvestigationEngine(DirectAnswerMixin):
                     hypothesis_id=state.pending_step.hypothesis_id,
                 )
                 rows = await self.registry.get(datasource_id).execute_read_query(sql)
+                rows = self._normalize_before_after_rows(rows)
                 break
             except (ProgrammingError, DBAPIError, SQLAlchemyError, UnsafeQueryError, KeyError) as exc:
                 if attempt:
@@ -1757,8 +1967,6 @@ class InvestigationEngine(DirectAnswerMixin):
             )
             relation_signature = self._relationship_signature(relation)
             cache_key = self._cross_datasource_lookup_cache_key(
-                relation.id,
-                relation_signature,
                 lookup.datasource_id,
                 lookup_source.get("fingerprint"),
                 lookup_sql,
@@ -1870,16 +2078,19 @@ class InvestigationEngine(DirectAnswerMixin):
 
     @staticmethod
     def _cross_datasource_lookup_cache_key(
-        relation_id: str,
-        relation_signature: str,
         datasource_id: str,
         schema_fingerprint: str | None,
         lookup_sql: str,
     ) -> str:
+        """Identify a validated lookup result, independently of its later binding.
+
+        Each use still validates its approved relationship before binding the
+        values to a primary query. The relationship therefore controls *where*
+        values may be applied, while this key controls only whether the same
+        source query has already been executed in this conversation.
+        """
         payload = "\n".join(
             (
-                relation_id,
-                relation_signature,
                 datasource_id,
                 schema_fingerprint or "",
                 " ".join(lookup_sql.split()),
@@ -2091,7 +2302,14 @@ class InvestigationEngine(DirectAnswerMixin):
             and any(hypothesis.id in evidence.hypothesis_ids for hypothesis in supported)
             for evidence in state.evidence
         )
-        if has_high_confidence_root and has_direct_evidence:
+        unresolved_internal_hypotheses = [
+            hypothesis
+            for hypothesis in state.hypotheses
+            if hypothesis.research_scope != "external"
+            and hypothesis.status in {HypothesisStatus.ACTIVE, HypothesisStatus.SUPPORTED}
+            and hypothesis not in supported
+        ]
+        if has_high_confidence_root and has_direct_evidence and not unresolved_internal_hypotheses:
             return {"next_action": "finish"}
 
         # Let a relevant configured external check complete the investigation
@@ -2104,6 +2322,7 @@ class InvestigationEngine(DirectAnswerMixin):
         testable_hypotheses = [
             hypothesis
             for hypothesis in state.hypotheses
+            if hypothesis.research_scope != "external"
             if hypothesis.status
             not in {
                 HypothesisStatus.REJECTED,
@@ -2126,8 +2345,11 @@ class InvestigationEngine(DirectAnswerMixin):
         if result.action == "external" and not can_research_externally:
             logger.info("Continuing internal investigation because external research is not available")
             return {"next_action": "continue", "status": InvestigationStatus.RUNNING}
-        if result.action == "finish" and not (has_high_confidence_root and has_direct_evidence):
-            logger.info("Continuing investigation because finality criteria have not been met")
+        if result.action == "finish" and (
+            not (has_high_confidence_root and has_direct_evidence)
+            or unresolved_internal_hypotheses
+        ):
+            logger.info("Continuing investigation because material internal explanations remain untested")
             return {"next_action": "continue", "status": InvestigationStatus.RUNNING}
         return {"next_action": result.action, "status": InvestigationStatus.RUNNING}
 
@@ -2199,7 +2421,7 @@ class InvestigationEngine(DirectAnswerMixin):
             analysis = analysis.model_copy(
                 update={"follow_up_question": analysis.follow_up_question or await self._contextual_follow_up_question(state)}
             )
-            analysis = self._with_scope_caveats(state, analysis)
+            analysis = self._normalize_analysis_presentation(self._with_scope_caveats(state, analysis))
             conversation_turns = completed_conversation_turns(analysis)
             await self._emit(
                 state,
@@ -2242,7 +2464,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 analysis = analysis.model_copy(
                     update={"follow_up_question": await self._contextual_follow_up_question(state)}
                 )
-                analysis = self._with_scope_caveats(state, analysis)
+                analysis = self._normalize_analysis_presentation(self._with_scope_caveats(state, analysis))
                 conversation_turns = completed_conversation_turns(analysis)
                 await self._emit(
                     state,
@@ -2280,7 +2502,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 ),
             )
             analysis = analysis.model_copy(update={"follow_up_question": await self._contextual_follow_up_question(state)})
-            analysis = self._with_scope_caveats(state, analysis)
+            analysis = self._normalize_analysis_presentation(self._with_scope_caveats(state, analysis))
             conversation_turns = completed_conversation_turns(analysis)
             await self._emit(
                 state,
@@ -2322,7 +2544,7 @@ class InvestigationEngine(DirectAnswerMixin):
                 ),
             )
             analysis = analysis.model_copy(update={"follow_up_question": await self._contextual_follow_up_question(state)})
-            analysis = self._with_scope_caveats(state, analysis)
+            analysis = self._normalize_analysis_presentation(self._with_scope_caveats(state, analysis))
             conversation_turns = completed_conversation_turns(analysis)
             await self._emit(
                 state,
@@ -2354,8 +2576,9 @@ class InvestigationEngine(DirectAnswerMixin):
             if hypothesis.status in {HypothesisStatus.SUPPORTED, HypothesisStatus.CONFIRMED}
             and hypothesis.confidence >= 0.78
             and any(
-                evidence.relationship == "direct"
+                evidence.relationship in {"direct", "supporting"}
                 and evidence.basis == "direct"
+                and evidence.scope == "mechanism"
                 and hypothesis.id in evidence.hypothesis_ids
                 for evidence in state.evidence
             )
@@ -2380,7 +2603,8 @@ class InvestigationEngine(DirectAnswerMixin):
                     ],
                 }
             )
-        analysis = self._with_scope_caveats(state, analysis)
+        analysis = self._bound_conclusion_level(analysis, state, supported_with_direct_evidence)
+        analysis = self._normalize_analysis_presentation(self._with_scope_caveats(state, analysis))
         status = InvestigationStatus.INSUFFICIENT_EVIDENCE if analysis.likely_root_cause is None else InvestigationStatus.COMPLETED
         conversation_turns = completed_conversation_turns(analysis)
         await self._emit(

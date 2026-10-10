@@ -240,6 +240,10 @@ class ExternalFinding(BaseModel):
     observation: str
     relationship: Literal["supporting", "correlated", "contradicting"] = "correlated"
     confidence: float = Field(ge=0, le=1)
+    # A configured provider-quality estimate. It is deliberately distinct
+    # from claim-specific ``confidence``, which is assigned after relevance
+    # and evidence assessment.
+    source_reliability: float | None = Field(default=None, ge=0, le=1)
     source_url: str
     source_title: str
     measurements: list["ExternalMeasurement"] = Field(default_factory=list)
@@ -326,6 +330,7 @@ class InvestigationEvent(BaseModel):
 
 class FinalAnalysis(BaseModel):
     likely_root_cause: str | None
+    conclusion_level: Literal["underlying_cause", "proximate_driver", "undetermined"] = "undetermined"
     confidence: float
     evidence: list[Evidence]
     rejected_hypotheses: list[Hypothesis]

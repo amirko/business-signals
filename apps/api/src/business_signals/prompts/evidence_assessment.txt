@@ -14,8 +14,8 @@ Never infer that sales records are incomplete, delayed, or missing merely becaus
 direct completeness or reconciliation signal. Until then, a broad or unscoped sales result is only a limitation or correlated observation, not support for a data-recording
 hypothesis and not a final root cause. A result must apply the requested location, business category, and period before it is used to explain a scoped question.
 
-For a before/after comparison, include the requested business metric's relative change as a numeric evidence data point named measured_metric_percentage_change in percentage
-points, not a decimal fraction: use -1.35 for a 1.35% decrease and -0.09 for a 0.09% decrease. Do not use that field for a possible cause such as payment failures,
+For a before/after comparison, include the requested business metric's relative change as a numeric evidence data point named rate_change_percent. It is a relative percent,
+not a decimal fraction or percentage-point difference: use -1.35 for a 1.35% decrease and -0.09 for a 0.09% decrease. Do not use that field for a possible cause such as payment failures,
 inventory, traffic, or price.
 
 When the latest observation has a baseline contract and `premise_to_validate` is supplied, set `premise_verdict`: `confirmed` only when the

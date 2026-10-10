@@ -136,7 +136,7 @@
         "output": {
           "observation_template": "Across {point_count} location(s) ({coverage_method}), daily temperatures ranged from {minimum_value}°C to {maximum_value}°C. Average precipitation was {average_precipitation} mm per location.",
           "source_title_template": "{agent_name} — {coverage_method}, {point_count} point(s)",
-          "confidence": 0.78
+          "source_reliability": 0.78
         }
       },
       "source_url": "https://open-meteo.com/"
@@ -205,7 +205,7 @@
             }
           ],
           "observation_template": "{base}/{quote} moved {change_percent}% across the requested period.",
-          "confidence": 0.82
+          "source_reliability": 0.82
         }
       },
       "source_url": "https://frankfurter.dev/"
@@ -248,7 +248,7 @@
           "no_result_observation_template": "No matching major event was found.",
           "source_title_template": "The Guardian: {sectionName}",
           "source_url_template": "{webUrl}",
-      "confidence": 0.68,
+      "source_reliability": 0.68,
       "relevance_selection": {
         "title_path": "webTitle",
         "url_path": "webUrl",
@@ -313,7 +313,7 @@
           "observation_template": "{series_title}: the latest recorded value in this period was {value} on {date} ({series_units}).",
           "no_result_observation_template": "FRED found the {series_title} series, but it has no observations in the requested period.",
           "source_title_template": "FRED: {series_title}",
-          "confidence": 0.84
+          "source_reliability": 0.84
         }
       },
       "source_url": "https://fred.stlouisfed.org/"

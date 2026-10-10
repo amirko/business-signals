@@ -1,4 +1,4 @@
-from business_signals.config import Settings
+from business_signals.config import Settings, settings
 from business_signals.investigation.workflow import InvestigationEngine
 from business_signals.models import (
     CrossDatasourceLookupCacheEntry,
@@ -8,6 +8,7 @@ from business_signals.models import (
     InvestigationLimits,
     InvestigationScope,
 )
+from business_signals.research_agents import JsonResponse, PipelineOutput
 
 
 def test_confidence_is_bounded() -> None:
@@ -35,6 +36,8 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
         investigation_max_duration_seconds=900,
         ignore_investigation_limits=True,
         metric_definition_confidence=0.72,
+        report_percent_decimal_places=2,
+        source_reliability_default=0.61,
         target_cell_area_km2=1250,
         max_points_weather_api=42,
     )
@@ -45,8 +48,20 @@ def test_investigation_limits_are_configured_from_environment_settings() -> None
     assert configured.investigation_max_duration_seconds == 900
     assert configured.ignore_investigation_limits is True
     assert configured.metric_definition_confidence == 0.72
+    assert configured.report_percent_decimal_places == 2
+    assert configured.source_reliability_default == 0.61
     assert configured.target_cell_area_km2 == 1250
     assert configured.max_points_weather_api == 42
+
+
+def test_research_agent_reliability_uses_the_configured_default(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "source_reliability_default", 0.61)
+
+    response = JsonResponse.model_validate({"observation_template": "A result was returned."})
+    pipeline_output = PipelineOutput.model_validate({"observation_template": "A result was returned."})
+
+    assert response.source_reliability == 0.61
+    assert pipeline_output.source_reliability == 0.61
 
 
 def test_checkpoint_serializer_allows_persisted_investigation_models() -> None:
@@ -65,3 +80,13 @@ def test_checkpoint_serializer_allows_persisted_investigation_models() -> None:
 
     assert serializer.loads_typed(serializer.dumps_typed(scope)) == scope
     assert serializer.loads_typed(serializer.dumps_typed(lookup_cache)) == lookup_cache
+
+
+def test_cross_datasource_lookup_cache_identity_is_the_source_query_not_a_relation_id() -> None:
+    sql = "SELECT id AS relationship_key FROM public.stores WHERE city = 'Dubai'"
+
+    first_key = InvestigationEngine._cross_datasource_lookup_cache_key("catalog", "catalog-v1", sql)
+    second_key = InvestigationEngine._cross_datasource_lookup_cache_key("catalog", "catalog-v1", sql)
+
+    assert first_key == second_key
+    assert first_key != InvestigationEngine._cross_datasource_lookup_cache_key("catalog", "catalog-v2", sql)

@@ -1,1 +1,17 @@
-Produce a concise evidence-backed final analysis. Do not claim causation from correlation. When a high-confidence supported hypothesis has direct evidence, identify it as the likely root cause and state its caveats. If evidence is insufficient, likely_root_cause must be null and explain the leading possibilities and missing evidence. Evidence with an empty hypothesis_ids list is an investigation-level data-quality or coverage caveat: include it in caveats, never treat it as support or contradiction for a root-cause hypothesis. `analysis_scope` states what was requested; `scope_coverage` states what was actually matched. If a requested filter matched zero, one, or a capped number of related records, state that limitation and limit the conclusion to the observed scope. Never infer a citywide result, a channel shift, or a product-group result from a narrower measurement. External findings are context only; when they contain `measurements`, compare their supplied baseline and comparison values, but do not imply causation. Write for a non-technical business reader; avoid formulas, SQL, table names, field names, and system jargon. Always provide one concise, context-aware follow_up_question that suggests useful next detail.
+Produce a concise evidence-backed final analysis. Do not claim causation from correlation.
+
+Set `conclusion_level` to `underlying_cause` only when direct evidence covers the claimed cause, mechanism, and business outcome.
+Set it to `proximate_driver` when direct evidence establishes an immediate driver of the result but not why that driver changed; say this plainly.
+Set it to `undetermined` when the available evidence cannot establish either.
+
+If evidence is insufficient, likely_root_cause must be null and explain the leading possibilities and missing evidence.
+Evidence with an empty hypothesis_ids list is an investigation-level data-quality or coverage caveat: include it in caveats, never treat it as support or contradiction for a root-cause hypothesis.
+
+`analysis_scope` states what was requested; `scope_coverage` states what was actually matched.
+If a requested filter matched zero, one, or a capped number of related records, state that limitation and limit the conclusion to the observed scope.
+Never infer a citywide result, a channel shift, or a product-group result from a narrower measurement.
+
+External findings are context only; when they contain `measurements`, compare their supplied baseline and comparison values, but do not imply causation.
+Express every percentage as a relative percentage with a `%` sign and at most two decimal places; never use the phrase "percentage points".
+Write for a non-technical business reader; avoid formulas, SQL, table names, field names, and system jargon.
+Always provide one concise, context-aware follow_up_question that suggests useful next detail.

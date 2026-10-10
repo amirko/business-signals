@@ -216,6 +216,11 @@ class ExternalResearchCoordinator:
                     if candidate.section and candidate.section != finding.source_title.removeprefix("The Guardian: ")
                     else finding.source_title
                 ),
+                # The complete provider response remains in the backend log.
+                # Only the selected document can enter the evidence or
+                # synthesis payload, preventing a later model step from
+                # generalising from unreviewed search results.
+                "candidates": [candidate],
             }
         )
 
@@ -272,10 +277,14 @@ class ExternalResearchCoordinator:
         valid_hypothesis_names = {hypothesis.name.casefold() for hypothesis in external_hypotheses}
         recorded_request_keys = self._recorded_request_keys(state)
         legacy_executed_agents = self._legacy_executed_agents(state, available_agents)
+        # Execute one assigned check at a time. Each result then passes
+        # through evidence assessment before the next agent is selected, so a
+        # concurrent batch cannot leave all but its final observation detached
+        # from the hypothesis that requested it.
         maximum_checks = (
-            len(available_agents)
+            1
             if settings.ignore_investigation_limits
-            else min(len(available_agents), state.limits.max_external_calls - state.external_call_count)
+            else min(1, state.limits.max_external_calls - state.external_call_count)
         )
         result = await self.llm.structured(
             ExternalResearchPlans,

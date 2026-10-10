@@ -21,7 +21,12 @@ class Settings(BaseSettings):
     ai_base_url: str = "https://api.openai.com/v1"
     query_timeout_seconds: int = 15
     max_query_rows: int = 500
+    # The maximum number of distinct values a text field may have before it is
+    # treated as free text rather than a controlled business vocabulary.
+    schema_categorical_value_limit: int = Field(default=50, ge=1)
     negligiblity_threshold_percent: float = 1.0
+    report_percent_decimal_places: int = Field(default=2, ge=0, le=8)
+    source_reliability_default: float = Field(default=0.65, ge=0, le=1)
     # Below this confidence, a proposed business measure is considered
     # unresolved and must not be replaced by catalog vocabulary inference.
     metric_definition_confidence: float = Field(default=0.75, ge=0, le=1)
