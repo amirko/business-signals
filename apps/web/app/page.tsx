@@ -3422,6 +3422,20 @@ function SavedInvestigationsView({
         return timeline;
       })()
     : [];
+  const evidenceIndexById = new Map<string, number>();
+  const evidenceByHypothesisId = new Map<string, Evidence[]>();
+  selected?.evidence.forEach((item, index) => {
+    evidenceIndexById.set(item.id, index);
+    const owners = Array.isArray(item.hypothesis_ids)
+      ? item.hypothesis_ids
+      : [];
+    const legacyOwner = owners.length === 1 ? owners[0] : null;
+    const owner = item.hypothesis_id ?? item.claim_id ?? legacyOwner;
+    if (!owner) return;
+    const existing = evidenceByHypothesisId.get(owner);
+    if (existing) existing.push(item);
+    else evidenceByHypothesisId.set(owner, [item]);
+  });
 
   if (selected)
     return (
@@ -3580,41 +3594,89 @@ function SavedInvestigationsView({
               )}
             </>
           )}
-          <section>
-            <h3>Hypotheses</h3>
-            {selected.hypotheses.map((hypothesis, index) => (
-              <article className="saved-detail-item" key={hypothesis.id}>
-                <code>H{index + 1}</code>
-                <div>
-                  <strong>{hypothesis.name}</strong>
-                  <span>
-                    {hypothesis.status} ·{' '}
-                    {Math.round(hypothesis.confidence * 100)}%
-                  </span>
-                  <p>{hypothesis.description}</p>
-                </div>
-              </article>
-            ))}
-          </section>
-          <section>
-            <h3>Evidence</h3>
-            {selected.evidence.map((item, index) => (
-              <article className="saved-detail-item" key={item.id}>
-                <code>E{index + 1}</code>
-                <div>
-                  <span>
-                    {item.relationship} · {Math.round(item.confidence * 100)}%
-                  </span>
-                  <p>{item.description}</p>
-                </div>
-              </article>
-            ))}
-            {selected.evidence.length === 0 && (
-              <p className="saved-empty">
-                No separate evidence was saved for this conversation.
-              </p>
-            )}
-          </section>
+          {selected.hypotheses.length > 0 && (
+            <section className="saved-hypothesis-tree">
+              <h3>Hypotheses and evidence</h3>
+              <div className="hypothesis-tree-list">
+                {selected.hypotheses.map((hypothesis, hypothesisIndex) => {
+                  const relatedEvidence =
+                    evidenceByHypothesisId.get(hypothesis.id) ?? [];
+                  const tone =
+                    hypothesis.status === 'rejected'
+                      ? 'bad'
+                      : hypothesis.status === 'supported' ||
+                          hypothesis.status === 'confirmed'
+                        ? 'good'
+                        : 'muted';
+                  return (
+                    <details
+                      className="hypothesis-tree"
+                      key={hypothesis.id}
+                      open
+                    >
+                      <summary>
+                        <code>H{hypothesisIndex + 1}</code>
+                        <strong>{hypothesis.name}</strong>
+                        <span className={tone}>{hypothesis.status}</span>
+                        <span className="tree-confidence">
+                          {Math.round(hypothesis.confidence * 100)}%
+                        </span>
+                        <ChevronDown />
+                      </summary>
+                      <div className="tree-children">
+                        <p className="hypothesis-description">
+                          {hypothesis.description}
+                        </p>
+                        {relatedEvidence.map((item) => (
+                          <article
+                            className="hypothesis-evidence"
+                            key={item.id}
+                          >
+                            <code>
+                              E{(evidenceIndexById.get(item.id) ?? 0) + 1}
+                            </code>
+                            <div>
+                              <span>
+                                {item.relationship} evidence ·{' '}
+                                {Math.round(item.confidence * 100)}%
+                              </span>
+                              <p>{item.description}</p>
+                            </div>
+                          </article>
+                        ))}
+                        {relatedEvidence.length === 0 && (
+                          <p className="tree-empty">
+                            No evidence was recorded for this hypothesis.
+                          </p>
+                        )}
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          {selected.hypotheses.length === 0 && (
+            <section>
+              <h3>Evidence</h3>
+              {selected.evidence.map((item, index) => (
+                <article className="saved-detail-item" key={item.id}>
+                  <code>E{index + 1}</code>
+                  <div>
+                    <span>
+                      {item.relationship} · {Math.round(item.confidence * 100)}%
+                    </span>
+                    <p>{item.description}</p>
+                  </div>
+                </article>
+              ))}
+              {selected.evidence.length === 0 && (
+                <p className="saved-empty">
+                  No separate evidence was saved for this conversation.
+                </p>
+              )}
+            </section>
+          )}
           {selected.conversation_turns.length === 0 &&
             selected.final_analysis && (
               <section className="saved-conclusion">
