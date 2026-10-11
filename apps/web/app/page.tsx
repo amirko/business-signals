@@ -1995,22 +1995,35 @@ function InvestigationView({
         {statusMessage && <output className="notice">{statusMessage}</output>}
         {finalAnalysis && (
           <article className="final-result">
-            <span className="section-kicker">
-              {finalAnalysisLabel(finalAnalysis)}
-            </span>
-            <h2>
-              {finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}
-            </h2>
-            <ReportText>{finalAnalysis.summary}</ReportText>
+            <div className="final-result-header">
+              <div>
+                <span className="section-kicker">
+                  {finalAnalysisLabel(finalAnalysis)}
+                </span>
+                <h2>
+                  {finalAnalysis.likely_root_cause ?? 'Insufficient evidence'}
+                </h2>
+              </div>
+              <span className="final-confidence">
+                {formatPercent(finalAnalysis.confidence)}
+                <small>confidence</small>
+              </span>
+            </div>
+            <div className="final-summary">
+              <span>Conclusion</span>
+              <ReportText>{finalAnalysis.summary}</ReportText>
+            </div>
             <ReportData evidence={finalAnalysis.evidence} />
-            <span className="source-chip">
-              {formatPercent(finalAnalysis.confidence)} confidence
-            </span>
-            {finalAnalysis.caveats.map((caveat) => (
-              <p className="final-caveat" key={caveat}>
-                {caveat}
-              </p>
-            ))}
+            {finalAnalysis.caveats.length > 0 && (
+              <section className="final-caveats" aria-label="Caveats">
+                <span>What to keep in mind</span>
+                {finalAnalysis.caveats.map((caveat) => (
+                  <p className="final-caveat" key={caveat}>
+                    {caveat}
+                  </p>
+                ))}
+              </section>
+            )}
             {!clarificationQuestion && (
               <section className="follow-up-prompt">
                 <p>Would you like to know more?</p>

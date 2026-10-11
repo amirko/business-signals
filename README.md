@@ -1,44 +1,108 @@
 # Business Signals
 
-An evidence-first, AI-powered root-cause investigation system for business anomalies. Business Signals connects independent operational databases, keeps competing explanations alive, chooses the next most informative investigation, and stops only when evidence is sufficient or the budget is exhausted.
+An evidence-first, AI-powered investigation workbench for business anomalies. Business Signals connects independent relational and time-series databases, discovers their schemas, proposes cross-database relationships for an administrator to approve, validates the event that needs explaining, keeps competing explanations alive, chooses the next informative check, and stops only when evidence is sufficient or its configured budget is exhausted.
 
-It is a LangGraph decision loop—not a chatbot, BI dashboard, text-to-SQL wrapper, or scripted multi-agent sequence.
+It is a LangGraph decision loop—not a chatbot, BI dashboard, text-to-SQL wrapper, or scripted multi-agent sequence. It also handles factual retrieval, schema discovery, safe cross-datasource lookups, resumable human clarification, and optional external research.
 
 ## What it demonstrates
 
 - A genuinely cyclic LangGraph that selects, executes, evaluates, and reroutes investigations
-- Cross-datasource reasoning without FDWs or a distributed SQL layer
-- Deterministic schema discovery, fingerprints, and metadata caching
-- Explicit hypotheses, supporting and contradicting evidence, and calibrated confidence
-- Selective historical weather, FX, and news/event research using real public APIs
-- LangGraph checkpointing and human clarification interrupts
-- Read-only SQL AST validation, timeouts, row caps, and database-level read-only sessions
-- Structured Server-Sent Events without exposing model chain-of-thought
-- Reproducible synthetic benchmarks built around real external events and negative controls
+- Premise validation before causal reasoning: it verifies that the reported change occurred before explaining it
+- Separate direct-answer and root-cause paths, both using schema-aware display-name resolution
+- Schema discovery, fingerprints, controlled-vocabulary caching, and persisted connection metadata
+- Cross-database relationship candidates inferred from compatible fields and sampled values, then approved by a human
+- Human-approved, bounded value lookups across sources without FDWs or distributed SQL
+- Explicit hypotheses, supporting and contradicting evidence, recoverable failed checks, and calibrated confidence
+- Catalog-configured historical weather and news/event research using real public APIs
+- LangGraph checkpoints, human clarification interrupts, resume/follow-up conversations, and local archives
+- Read-only SQL AST validation, table/column allowlists, timeouts, row caps, and database-level read-only sessions
+- Typed Server-Sent Events and optional privacy-conscious LangSmith traces with token usage
+- Reproducible synthetic benchmarks, including external-event and negative-control scenarios
 
 ## Experience
 
-Ask a question such as:
+Ask either a factual business question or a causal investigation question:
 
-> Why did outdoor-product revenue fall sharply in northern Italy during July?
+> What was total revenue for Milan in Q3 2024?
 
-The engine might first test whether the decline is demand- or supply-driven in TimescaleDB, carry the affected product IDs into a separate PostgreSQL catalog, discover a shared supplier, return to inventory history for temporal validation, and only then decide whether one targeted external event search is worthwhile.
+> Why did unit sales of outdoor products in Milan fall in July 2024 compared with June?
 
-```mermaid
-flowchart LR
-    Q[Understand question] --> H[Form competing hypotheses]
-    H --> S[Select highest-value investigation]
-    S --> D[Choose datasource and query]
-    D --> E[Evaluate evidence]
-    E --> U[Update hypotheses]
-    U --> X{What next?}
-    X -->|More evidence needed| S
-    X -->|Business ambiguity| I[Human interrupt]
-    I --> S
-    X -->|Specific external mechanism| R[Targeted external research]
-    R --> U
-    X -->|Sufficient or budget reached| F[Evidence-backed synthesis]
+For a factual request, the engine plans and safely executes the needed read-only query, then returns readable values rather than internal database identifiers. For a causal request, it first validates that the decline occurred. It can then test demand, availability, price, or promotion explanations in TimescaleDB; carry approved relationship values into a separate PostgreSQL catalog; and decide whether historical weather or news research is relevant evidence.
+
+```text
+CONNECT AND UNDERSTAND INDEPENDENT SOURCES
+
+  Relational database                         Time-series database
+  (for example PostgreSQL)                    (for example TimescaleDB)
+           │                                           │
+           └─────────────── schema discovery ─────────┘
+                                  │
+                   tables, fields, keys, types,
+                    and representative values
+                                  │
+                                  ▼
+              compatible-field and value-overlap checks
+                                  │
+                                  ▼
+                  suggested cross-database relationship
+                                  │
+                                  ▼
+                 administrator reviews, edits, approves
+                                  │
+                                  ▼
+                    confirmed relationship is saved
+
+
+ANSWER A QUESTION
+
+  Business question
+          │
+          ▼
+  Understand the requested measure, scope, and time period
+          │
+          ├── ambiguity that matters ──► ask the person ──► continue
+          │
+          └── request understood
+                    │
+                    ├── factual question
+                    │       │
+                    │       ▼
+                    │   plan a safe read-only query
+                    │       │
+                    │       ├── one source ──► execute and shape the result
+                    │       │
+                    │       └── two sources ──► approved bounded lookup
+                    │                              then safe filtered query
+                    │                                      │
+                    │                                      ▼
+                    │                            readable factual answer
+                    │
+                    └── causal question (for example, “why did sales fall?”)
+                            │
+                            ▼
+                    validate that the reported change occurred
+                            │
+                            ├── not confirmed ──► explain that no cause can be established
+                            │
+                            └── confirmed
+                                    │
+                                    ▼
+                         form competing explanations
+                                    │
+                                    ▼
+                  run the most useful internal or external check
+                                    │
+                                    ▼
+                    attach supporting or contradicting evidence
+                                    │
+                                    └── repeat until evidence is sufficient
+                                        or the configured budget is reached
+                                                    │
+                                                    ▼
+                                   evidence-backed investigation report
 ```
+
+Business Signals does not join independent databases directly. It compares compatible schema fields and representative values to propose a relationship; an administrator approves or edits it. When a query needs both sources, the application first performs a bounded read-only lookup in one source, then applies the approved values as a safe filter in the other.
 
 ## Repository layout
 
@@ -52,13 +116,13 @@ examples/
   generators/          Deterministic PostgreSQL and TimescaleDB fixtures
   scenarios/           Ground-truth benchmark definitions and negative controls
   evaluate.py          Scenario result scorer
-docker-compose.yml     Independent catalog and analytics databases
+docker-compose.yml     Optional synthetic catalog and analytics demo databases
 pyproject.toml         Python 3.12 package and test configuration
 ```
 
 ## Quick start
 
-Requirements: Python 3.12+, Node 22.13+, Docker, and an API key for a supported AI provider.
+Requirements: Python 3.12+, Node 22.13+, and an API key for a supported AI provider. Docker is needed only to run the provided synthetic demo dataset.
 
 ```bash
 cp .env.example .env
@@ -66,8 +130,26 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 npm --prefix apps/web install
+```
+
+### Provided demo dataset (optional)
+
+Run the following only if you want the supplied synthetic data and preconfigured PostgreSQL/TimescaleDB demo sources:
+
+```bash
 docker compose up -d --wait
 ```
+
+This starts two demo databases and initializes them from the checked-in CSV files under `examples/data/`. The data is synthetic and safe to use for the walkthrough. Otherwise, start the API and connect your own databases through the workbench.
+
+Add these two connections in the workbench after starting Docker:
+
+| Name | Type | Host | Port | Database | User / password |
+| --- | --- | --- | ---: | --- | --- |
+| Product Catalog | PostgreSQL | `localhost` | 5432 | `catalog` | `investigator` / `investigator` |
+| Sales Analytics | TimescaleDB | `localhost` | 5434 | `analytics` | `investigator` / `investigator` |
+
+The Docker credentials are for the disposable demo only. Use a dedicated read-only database role for any real datasource.
 
 ### AI provider
 
@@ -132,37 +214,6 @@ investigation should use the relevant store coordinates rather than a regional g
 
 The database initialization scripts create schema and load the checked-in CSV fixtures under `examples/data/`. Those files hold internal business records only; weather and historic-event data remains an external-research concern.
 
-### Optional research-agent credentials
-
-Research agents are defined in `config/research-agents.json`, but their keys are never written
-there. To enable the Guardian historic-news agent, add your personal key to the untracked `.env`
-file and restart the API:
-
-```bash
-GUARDIAN_API_KEY=your-key
-```
-
-The catalog references only the environment-variable names; the executor injects keys server-side
-and removes query-string credentials from returned source links before findings are archived or shown.
-
-### Optional LangSmith monitoring
-
-Tracing is off by default. To monitor LangGraph investigations, custom structured LLM calls, SQL
-execution, and research-agent calls, add the following to the untracked `.env` file and restart the
-API:
-
-```bash
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=your-key
-LANGSMITH_PROJECT=business-signals-dev
-LANGSMITH_CAPTURE_CONTENT=false
-```
-
-With content capture disabled, traces contain only operational metadata, fingerprints, durations,
-and outcomes—not question text, SQL, query rows, external-response bodies, or credentials. Set
-`LANGSMITH_CAPTURE_CONTENT=true` only for non-sensitive local fixture data. Monitoring failures are
-non-fatal and never stop an investigation.
-
 Start the API and web app in separate terminals:
 
 ```bash
@@ -170,14 +221,7 @@ make api
 make web
 ```
 
-Open `http://localhost:3000`. Add the two seeded connections:
-
-| Name | Type | Port | Database | User / password |
-| --- | --- | ---: | --- | --- |
-| Product Catalog | PostgreSQL | 5433 | `catalog` | `investigator` / `investigator` |
-| Sales Analytics | TimescaleDB | 5434 | `analytics` | `investigator` / `investigator` |
-
-Use read-only credentials outside the disposable demo environment. Datasource definitions and discovered schemas are saved locally at `.business-signals/datasources.json` (or `DATASOURCE_STORE_PATH`) so they survive API restarts. The file is gitignored and created with owner-only permissions; it contains the credentials needed to restore local connections. Credentials are never serialized into graph state, API responses, events, logs, or model payloads. Delete a datasource in the UI to remove its saved definition and schema cache.
+Open `http://localhost:3000`. Datasource definitions and discovered schemas are saved locally at `.business-signals/datasources.json` (or `DATASOURCE_STORE_PATH`) so they survive API restarts. The file is gitignored and created with owner-only permissions; it contains the credentials needed to restore local connections. Credentials are never serialized into graph state, API responses, events, logs, or model payloads. Delete a datasource in the UI to remove its saved definition and schema cache.
 
 ## API
 
@@ -189,48 +233,37 @@ GET  /api/datasources/{id}/metadata   # cached schema; no database call
 POST /api/datasources/{id}/refresh
 DELETE /api/datasources/{id}
 
+GET  /api/relationships
+GET  /api/relationships/suggestions
+POST /api/relationships/validate
+POST /api/relationships
+PUT  /api/relationships/{id}
+DELETE /api/relationships/{id}
+
+GET  /api/research-agents
 POST /api/investigations
 GET  /api/investigations                 # local saved-run archive
 DELETE /api/investigations              # delete all saved runs (when none are running)
 GET  /api/investigations/{id}
 DELETE /api/investigations/{id}
-GET  /api/investigations/{id}/events       # SSE
-POST /api/investigations/{id}/responses    # resume HITL interrupt
+POST /api/investigations/{id}/stop
+GET  /api/investigations/{id}/events     # SSE; accepts an event offset for replay
+POST /api/investigations/{id}/responses  # resume a clarification interrupt
+POST /api/investigations/{id}/skip-clarification
+POST /api/investigations/{id}/follow-up
 ```
 
 FastAPI exposes interactive OpenAPI documentation at `http://localhost:8000/docs`.
 
 ## Core design
 
-The model plans and interprets; code owns facts and arithmetic. The engine sends compact structural metadata rather than full schemas, validates generated SQL as a single read-only statement, executes through the chosen adapter, and stores result rows as observations. Deterministic functions calculate period comparisons, segmentation, missingness, duplicates, distributions, correlation, anomalies, trend changes, and before/after effects.
+The model plans and interprets; code owns data access, query safety, state transitions, relationship binding, row shaping, and budget enforcement. The engine sends compact structural metadata rather than unrestricted database access, validates generated SQL as a single read-only statement, executes through the selected adapter, and stores result rows as observations. A causal investigation first validates the factual premise before it evaluates candidate causes.
 
 PostgreSQL and TimescaleDB are separate adapter instances. Intermediate findings move through typed graph state. The `Datasource` contract is deliberately broader than SQL so ClickHouse, BigQuery, Snowflake, MongoDB, or Elasticsearch adapters can be added later without changing the investigation loop.
 
-External specialists are not fan-out workers. The decision node can call at most one relevant external capability when internal evidence suggests a concrete external mechanism. Their outputs always carry source, date range, confidence, and a `correlated` or `supporting` relationship; they cannot directly establish causation.
+External specialists are bounded, configured checks rather than free-form fan-out workers. The decision node selects only agents whose declared evidence topics match a hypothesis's declared mechanism. Their outputs carry source, date range, confidence, and a `correlated` or `supporting` relationship; they cannot directly establish causation.
 
 LLM instructions are versioned as package-local text files in `apps/api/src/business_signals/prompts/`. The loader validates and caches named prompts; runtime schema, evidence, and user context remain typed payloads in code rather than being interpolated into prompt files.
-
-### Research-agent catalog
-
-`config/research-agents.json` is the versioned catalog of research agents. It includes the
-built-in weather, FX, and news/event agents and is the extension point for new integrations.
-Each entry declares its name, purpose, subjects, `evidence_topics`, enabled state, source, and a
-constrained HTTP/JSON workflow and response mapping. `evidence_topics` is the semantic contract
-used at runtime: a weather agent may run only for a hypothesis that claims a weather mechanism;
-an FX, event, or macroeconomic agent must match its own declared topic. This is independent of
-the hypothesis number or its display label. Credentials are never put in the JSON file: an agent
-refers only to an environment-variable name.
-
-Simple providers use an `http_json` runner with an HTTPS base URL, an API-key environment
-variable, fixed GET/POST endpoint templates, and an explicit JSON result mapping. More involved
-providers can use a `pipeline` runner that composes only allow-listed primitives: string splitting,
-HTTP JSON calls, geographic candidate selection, boundary sampling, coordinate batching, and
-daily-series aggregation. The weather integration is the first such pipeline; its URLs, parameters,
-JSON paths, measures, and rendering all remain in the catalog rather than Python conditionals.
-
-Templates may use only predeclared values. The catalog is data, not executable code: custom agents
-cannot run shell commands, arbitrary Python, or arbitrary URLs supplied by a model. The API exposes
-the installed catalog at `GET /api/research-agents` without any secret values.
 
 See [the architecture notes](docs/architecture.md) for trust boundaries and extension points.
 
@@ -248,7 +281,7 @@ The validator is defense in depth, not a substitute for a database role with min
 
 ## Benchmarks
 
-The checked-in scenarios cover payment regression, duplicate ingestion, supplier inventory, historical weather, a local geopolitical disruption, FX-driven margin pressure, a major technology outage, and a storm negative control. Ground truth specifies expected evidence, allowed external routes, and forbidden conclusions.
+The checked-in scenarios cover payment regression, duplicate ingestion, supplier inventory, historical weather, a local geopolitical disruption, FX-driven margin pressure, a major technology outage, and a storm negative control. Ground truth specifies expected evidence, allowed external routes, and forbidden conclusions. Scenarios are evaluation fixtures; an external route is exercised only when a matching configured agent is available.
 
 ```bash
 python examples/evaluate.py \
@@ -262,13 +295,36 @@ The score rewards correct cause and evidence, datasource routing, restraint with
 
 ```bash
 pytest
+npm --prefix apps/web run lint
 npm --prefix apps/web run build
 ```
 
 ## Current scope
 
-Datasource registrations and their schema cache survive local API restarts. Investigation records are archived locally under `.business-signals/investigations/` (or `INVESTIGATION_STORE_DIR`), with their question, human clarifications, hypotheses, evidence, and final analysis. LangGraph checkpoints are stored separately in the catalog PostgreSQL database, under the `business_signals` schema by default (`CHECKPOINT_DATABASE_URL` and `CHECKPOINT_SCHEMA`). This preserves the exact graph position and pending interrupt, so a paused clarification can resume after an API restart without repeating earlier steps. The Saved runs view can inspect or delete one archived run or all non-running runs. It implements PostgreSQL and TimescaleDB only, relies on live public services for optional external research, and expects an OpenAI-compatible model capable of reliable structured JSON. Durable encrypted credentials, organization authentication, and additional adapters are follow-on work.
+Datasource registrations and their schema cache survive local API restarts. Investigation records are archived locally under `.business-signals/investigations/` (or `INVESTIGATION_STORE_DIR`), with their question, human clarifications, hypotheses, evidence, and final analysis. LangGraph checkpoints are stored separately in the catalog PostgreSQL database, under the `business_signals` schema by default (`CHECKPOINT_DATABASE_URL` and `CHECKPOINT_SCHEMA`). This preserves the exact graph position and pending interrupt, so a paused clarification can resume after an API restart without repeating earlier steps. The Saved runs view can inspect or delete one archived run or all non-running runs. It currently implements PostgreSQL and TimescaleDB, supports OpenAI, OpenAI-compatible, and Anthropic structured-output providers, and relies on live public services for optional external research. Durable encrypted credentials, organization authentication, and additional adapters are follow-on work.
+
+## Optional integrations
+
+### Research agents
+
+The bundled agents cover historical weather and historic Guardian news. You can add your own research agents by configuring `config/research-agents.json` (or the path set by `RESEARCH_AGENT_CATALOG_PATH`). Each agent needs a fixed HTTPS provider configuration, clear business purpose, supported subjects, evidence topics, a bounded request/response mapping, reliability, and the name of any environment variable that contains its API key. The catalog is validated at startup; it is configuration, not executable code, so agents cannot run arbitrary code or accept model-supplied URLs.
+
+Keep provider secrets in `.env`, never in the catalog. To enable the built-in Guardian historic-news agent, add `GUARDIAN_API_KEY=your-key` to `.env` and restart the API.
+
+### LangSmith monitoring
+
+Tracing is off by default. To monitor LangGraph investigations, structured LLM calls, SQL execution, and research-agent calls, add the following to the untracked `.env` file and restart the API:
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-key
+LANGSMITH_PROJECT=business-signals-dev
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com  # use the regional endpoint for your project, if applicable
+LANGSMITH_CAPTURE_CONTENT=false
+```
+
+With content capture disabled, traces contain only operational metadata, fingerprints, durations, outcomes, and LLM token usage—not question text, SQL, query rows, external-response bodies, or credentials. The provider layer maps native usage to LangSmith's `input_tokens`, `output_tokens`, and `total_tokens` fields when available. Monitoring failures are non-fatal and never stop an investigation.
 
 ## License
 
-MIT
+This project is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). It permits personal and other noncommercial use, modification, and distribution, but not commercial use. The software is provided "as is," without warranty or liability to the extent permitted by law. Commercial licensing requires separate permission from the copyright holder.
