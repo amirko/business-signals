@@ -544,25 +544,7 @@ class DirectAnswerMixin:
                 logger.info("Skipping redundant client-side intersection after entity filter was applied")
             else:
                 supporting_rows = executed_results[combination.supporting_query_index + 1][0]
-                primary_fields = self._combination_fields(combination.primary_key)
-                supporting_fields = self._combination_fields(combination.supporting_key)
-                if len(primary_fields) != len(supporting_fields):
-                    raise UnsafeQueryError("Direct-answer combination uses a different number of primary and supporting fields")
-                if any(any(field not in row for field in primary_fields) for row in rows) or any(
-                    any(field not in row for field in supporting_fields) for row in supporting_rows
-                ):
-                    raise UnsafeQueryError("Direct-answer combination refers to fields not returned by its queries")
-                primary_values = {self._combination_row_key(row, primary_fields) for row in rows}
-                supporting_values = {self._combination_row_key(row, supporting_fields) for row in supporting_rows}
-                if combination.operation == "set_difference":
-                    rows = [row for row in rows if self._combination_row_key(row, primary_fields) not in supporting_values]
-                elif combination.operation == "intersection":
-                    rows = [row for row in rows if self._combination_row_key(row, primary_fields) in supporting_values]
-                else:
-                    rows = [
-                        *rows,
-                        *[row for row in supporting_rows if self._combination_row_key(row, supporting_fields) not in primary_values],
-                    ]
+                rows = self._combine_or_keep_direct_answer_rows(rows, supporting_rows, combination)
         rows = self._merge_approved_supporting_rows(
             state,
             rows,
@@ -571,7 +553,7 @@ class DirectAnswerMixin:
             [(item[0], query_plans[index]) for index, item in enumerate(executed_results[1:], start=1)],
         )
         if plan.combination is not None and plan.combination.operation == "aggregate":
-            rows = self._aggregate_direct_answer_rows(rows, plan.combination)
+            rows = self._aggregate_or_keep_direct_answer_rows(rows, plan.combination)
         (
             enriched_rows,
             enrichment_steps,
@@ -730,11 +712,13 @@ class DirectAnswerMixin:
     def _question_refers_to_retained_entity(state: InvestigationState) -> bool:
         """Recognize an explicit reference to a previously resolved business entity."""
         question = (state.current_conversation_question or state.question).casefold()
-        # A continuation normally inherits the single entity established by the prior answer.
-        # Do not make the user repeat its name for a natural request such as "show by store".
+        # A continuation can inherit the *one* entity established by the prior answer.
+        # With several retained entities, a generic follow-up such as "best-selling item"
+        # describes a new ranking, not a request to restrict the ranking to every item that
+        # happened to appear earlier in the conversation.
         if (
             state.question.startswith("Follow-up request:")
-            and state.resolved_entities
+            and len(state.resolved_entities) == 1
             and not re.search(r"\ball\s+(?:products|items|stores|suppliers)\b", question)
         ):
             return True
@@ -901,10 +885,26 @@ class DirectAnswerMixin:
                 lookup = {str(row[supporting_key]): row for row in supporting_rows if row.get(supporting_key) is not None}
                 if not lookup:
                     continue
+                # Two lookups can expose the same output field (for example,
+                # both a product and a store catalog commonly return `name`).
+                # Never discard the later value: give it a stable, relation-derived
+                # result field so the answer can distinguish product_name from name.
+                existing_fields = {key for row in merged_rows for key in row}
+
+                incoming_fields = {
+                    key: self._supporting_output_field(existing_fields, relation.target_field, key)
+                    for row in supporting_rows
+                    for key in row
+                    if key != supporting_key
+                }
                 merged_rows = [
                     {
                         **row,
-                        **{key: value for key, value in lookup[str(row[primary_key])].items() if key != supporting_key and key not in row},
+                        **{
+                            incoming_fields[key]: value
+                            for key, value in lookup[str(row[primary_key])].items()
+                            if key != supporting_key
+                        },
                     }
                     if row.get(primary_key) is not None and str(row[primary_key]) in lookup
                     else row
@@ -918,6 +918,19 @@ class DirectAnswerMixin:
         return merged_rows
 
     @staticmethod
+    def _supporting_output_field(existing_fields: set[str], target_field: str, field: str) -> str:
+        """Keep same-named fields from two approved relationships distinguishable."""
+        if field not in existing_fields:
+            return field
+        table_label = target_field.rsplit(".", 1)[0].rsplit(".", 1)[-1].rstrip("s") or "related"
+        candidate = f"{table_label}_{field}"
+        suffix = 2
+        while candidate in existing_fields:
+            candidate = f"{table_label}_{field}_{suffix}"
+            suffix += 1
+        return candidate
+
+    @staticmethod
     def _combination_fields(value: str) -> list[str]:
         """Parse a model-planned single or composite result key without trusting SQL-like text."""
         fields = [field.strip() for field in value.split(",") if field.strip()]
@@ -929,6 +942,45 @@ class DirectAnswerMixin:
     def _combination_row_key(row: dict[str, Any], fields: list[str]) -> tuple[str, ...]:
         """Use an ordered tuple so a composite group can be combined deterministically."""
         return tuple(str(row[field]) for field in fields)
+
+    @classmethod
+    def _combine_or_keep_direct_answer_rows(
+        cls,
+        rows: list[dict[str, Any]],
+        supporting_rows: list[dict[str, Any]],
+        combination: Any,
+    ) -> list[dict[str, Any]]:
+        """Apply an optional model-proposed set operation without losing a valid query result.
+
+        Supporting queries are still used below through approved relationships to attach
+        readable fields.  A malformed optional set operation must not turn those successful,
+        independently validated queries into a failed conversation.
+        """
+        try:
+            primary_fields = cls._combination_fields(combination.primary_key)
+            supporting_fields = cls._combination_fields(combination.supporting_key)
+            if len(primary_fields) != len(supporting_fields):
+                raise UnsafeQueryError("Direct-answer combination uses a different number of primary and supporting fields")
+            if any(any(field not in row for field in primary_fields) for row in rows) or any(
+                any(field not in row for field in supporting_fields) for row in supporting_rows
+            ):
+                raise UnsafeQueryError("Direct-answer combination refers to fields not returned by its queries")
+            primary_values = {cls._combination_row_key(row, primary_fields) for row in rows}
+            supporting_values = {cls._combination_row_key(row, supporting_fields) for row in supporting_rows}
+            if combination.operation == "set_difference":
+                return [row for row in rows if cls._combination_row_key(row, primary_fields) not in supporting_values]
+            if combination.operation == "intersection":
+                return [row for row in rows if cls._combination_row_key(row, primary_fields) in supporting_values]
+            return [
+                *rows,
+                *[row for row in supporting_rows if cls._combination_row_key(row, supporting_fields) not in primary_values],
+            ]
+        except UnsafeQueryError as exc:
+            logger.warning(
+                "Ignoring invalid direct-answer set operation and retaining the primary query result: error=%s",
+                exc,
+            )
+            return rows
 
     @classmethod
     def _aggregate_direct_answer_rows(cls, rows: list[dict[str, Any]], combination: Any) -> list[dict[str, Any]]:
@@ -946,12 +998,29 @@ class DirectAnswerMixin:
         if len(measure_fields) != 1:
             raise UnsafeQueryError("Direct-answer aggregate accepts exactly one measure field")
         measure = measure_fields[0]
-        required_fields = [*group_fields, measure]
-        if any(any(field not in row for field in required_fields) for row in rows):
-            raise UnsafeQueryError("Direct-answer aggregate refers to fields not returned by its queries")
+        # A supporting lookup can supply the requested group label (for
+        # example a store's city).  Primary rows outside that lookup do not
+        # receive the label and must not invalidate the aggregate or leak
+        # into its requested scope.
+        grouped_rows = [
+            row
+            for row in rows
+            if all(row.get(field) is not None for field in group_fields)
+        ]
+        if not grouped_rows:
+            raise UnsafeQueryError("Direct-answer aggregate refers to group fields not returned by its queries")
+        if any(measure not in row for row in grouped_rows):
+            raise UnsafeQueryError("Direct-answer aggregate refers to a measure not returned by its queries")
+        excluded_rows = len(rows) - len(grouped_rows)
+        if excluded_rows:
+            logger.info(
+                "Excluded direct-answer rows without requested aggregate group labels: rows=%d group_by=%s",
+                excluded_rows,
+                ",".join(group_fields),
+            )
 
         groups: dict[tuple[str, ...], tuple[dict[str, Any], list[Decimal]]] = {}
-        for row in rows:
+        for row in grouped_rows:
             key = cls._combination_row_key(row, group_fields)
             group, values = groups.setdefault(key, ({field: row[field] for field in group_fields}, []))
             value = cls._decimal_measure(row[measure])
@@ -972,12 +1041,31 @@ class DirectAnswerMixin:
         logger.info(
             "Aggregated complete direct-answer result: operation=%s input_rows=%d output_groups=%d group_by=%s measure=%s",
             combination.aggregation,
-            len(rows),
+            len(grouped_rows),
             len(aggregate_rows),
             ",".join(group_fields),
             measure,
         )
         return aggregate_rows
+
+    @classmethod
+    def _aggregate_or_keep_direct_answer_rows(
+        cls,
+        rows: list[dict[str, Any]],
+        combination: Any,
+    ) -> list[dict[str, Any]]:
+        """Apply optional display aggregation without discarding valid query output."""
+        try:
+            return cls._aggregate_direct_answer_rows(rows, combination)
+        except UnsafeQueryError as exc:
+            # Combination instructions are model-proposed presentation work.
+            # A corrected query can validly return a different, already-
+            # answerable shape than the original aggregation expected.
+            logger.warning(
+                "Ignoring invalid direct-answer aggregate and returning the merged query result: error=%s",
+                exc,
+            )
+            return rows
 
     @staticmethod
     def _decimal_measure(value: Any) -> Decimal | None:

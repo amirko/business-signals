@@ -106,11 +106,14 @@ type Clarification = {
 type ConversationTurn = {
   question: string;
   answer: FinalAnalysis;
+  hypotheses?: Hypothesis[];
+  evidence?: Evidence[];
   created_at: string;
 };
 type ConversationFeedback = {
   question: string;
   response: string;
+  kind?: 'clarification' | 'follow_up';
   hypothesis_id: string | null;
   received_at: string;
 };
@@ -135,11 +138,7 @@ type SavedInvestigation = {
     | 'rejected'
     | 'inconclusive';
   final_analysis: FinalAnalysis | null;
-  conversation_turns: {
-    question: string;
-    answer: FinalAnalysis;
-    created_at: string;
-  }[];
+  conversation_turns: ConversationTurn[];
 };
 type Datasource = {
   id: string;
@@ -339,6 +338,105 @@ function ConversationTranscript({
   omitLatestAnswer: boolean;
   isInvestigating: boolean;
 }) {
+  const turnInvestigation = (turn: ConversationTurn, turnIndex: number) => {
+    const turnEvidence = turn.evidence ?? [];
+    const premiseEvidence = turnEvidence.filter(
+      (item) => item.scope === 'premise',
+    );
+    const hypotheses = turn.hypotheses ?? [];
+    if (premiseEvidence.length === 0 && hypotheses.length === 0) return null;
+    const evidenceForHypothesis = (hypothesisId: string) =>
+      turnEvidence.filter((item) => {
+        const owners = Array.isArray(item.hypothesis_ids)
+          ? item.hypothesis_ids
+          : [];
+        const legacyOwner = owners.length === 1 ? owners[0] : null;
+        return (
+          (item.hypothesis_id ?? item.claim_id ?? legacyOwner) === hypothesisId
+        );
+      });
+    return (
+      <section
+        className="turn-investigation"
+        key={`investigation-${turn.created_at}-${turnIndex}`}
+        aria-label="Investigation details"
+      >
+        {premiseEvidence.length > 0 && (
+          <section className="premise-validation" aria-label="Baseline check">
+            <span className="section-kicker">BASELINE CHECK</span>
+            <h2>Did the reported change occur?</h2>
+            {premiseEvidence.map((item, index) => (
+              <article className="premise-evidence" key={item.id}>
+                <code aria-label={`Evidence ${index + 1}`}>E{index + 1}</code>
+                <div>
+                  <span>
+                    {item.relationship} evidence ·{' '}
+                    {Math.round(item.confidence * 100)}%
+                  </span>
+                  <p>{item.description}</p>
+                </div>
+              </article>
+            ))}
+          </section>
+        )}
+        {hypotheses.length > 0 && (
+          <section className="turn-hypothesis-tree">
+            <span className="section-kicker">HYPOTHESIS INVESTIGATION</span>
+            <div className="hypothesis-tree-list">
+              {hypotheses.map((hypothesis, hypothesisIndex) => {
+                const relatedEvidence = evidenceForHypothesis(hypothesis.id);
+                const tone =
+                  hypothesis.status === 'rejected'
+                    ? 'bad'
+                    : hypothesis.status === 'supported' ||
+                        hypothesis.status === 'confirmed'
+                      ? 'good'
+                      : 'muted';
+                return (
+                  <details className="hypothesis-tree" key={hypothesis.id} open>
+                    <summary>
+                      <code>H{hypothesisIndex + 1}</code>
+                      <strong>{hypothesis.name}</strong>
+                      <span className={tone}>{hypothesis.status}</span>
+                      <span className="tree-confidence">
+                        {Math.round(hypothesis.confidence * 100)}%
+                      </span>
+                      <ChevronDown />
+                    </summary>
+                    <div className="tree-children">
+                      <p className="hypothesis-description">
+                        <strong>Candidate explanation: </strong>
+                        {hypothesis.description}
+                      </p>
+                      {relatedEvidence.map((item) => (
+                        <article className="hypothesis-evidence" key={item.id}>
+                          <code>
+                            E{turnEvidence.findIndex((candidate) => candidate.id === item.id) + 1}
+                          </code>
+                          <div>
+                            <span>
+                              {item.relationship} evidence ·{' '}
+                              {Math.round(item.confidence * 100)}%
+                            </span>
+                            <p>{item.description}</p>
+                          </div>
+                        </article>
+                      ))}
+                      {relatedEvidence.length === 0 && (
+                        <p className="tree-empty">
+                          No evidence was recorded for this hypothesis.
+                        </p>
+                      )}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </section>
+    );
+  };
   const orderedTurns = [...turns].sort(
     (left, right) =>
       new Date(left.created_at).getTime() -
@@ -380,6 +478,18 @@ function ConversationTranscript({
   const feedbackAfterFinalTurn = orderedFeedback.filter(
     (item) => new Date(item.received_at).getTime() > finalTurnTime,
   );
+  const feedbackCard = (
+    item: ConversationFeedback,
+    key: string,
+    kind: 'clarification' | 'follow_up' = item.kind ?? 'clarification',
+  ) => (
+    <article className="conversation-turn conversation-feedback" key={key}>
+      <small>{kind === 'follow_up' ? 'FOLLOW-UP REQUEST' : 'CLARIFICATION'}</small>
+      <p>{item.question}</p>
+      <small>YOUR ANSWER</small>
+      <p className="saved-answer">{item.response}</p>
+    </article>
+  );
   return (
     <section
       className="conversation-transcript"
@@ -398,7 +508,21 @@ function ConversationTranscript({
         </article>
       )}
       {orderedTurns.flatMap((turn, index) => {
+        const turnFeedback = feedbackForTurn(index);
+        const isFollowUpForTurn = (item: ConversationFeedback) =>
+          item.kind === 'follow_up' ||
+          item.response.trim() === turn.question.trim() ||
+          item.question.trim() === turn.question.trim();
+        const followUpFeedback = turnFeedback.filter(
+          isFollowUpForTurn,
+        );
+        const clarificationFeedback = turnFeedback.filter(
+          (item) => !isFollowUpForTurn(item),
+        );
         const items: ReactNode[] = [
+          ...followUpFeedback.map((item) =>
+            feedbackCard(item, `follow-up-${item.received_at}`, 'follow_up'),
+          ),
           <article
             className="conversation-turn conversation-question"
             key={`question-${turn.created_at}-${index}`}
@@ -407,19 +531,13 @@ function ConversationTranscript({
             <p>{turn.question}</p>
           </article>,
         ];
-        feedbackForTurn(index).forEach((item) => {
+        clarificationFeedback.forEach((item) =>
           items.push(
-            <article
-              className="conversation-turn conversation-feedback"
-              key={`feedback-${item.received_at}`}
-            >
-              <small>FOLLOW-UP REQUEST</small>
-              <p>{item.question}</p>
-              <small>YOUR ANSWER</small>
-              <p className="saved-answer">{item.response}</p>
-            </article>,
-          );
-        });
+            feedbackCard(item, `clarification-${item.received_at}`, 'clarification'),
+          ),
+        );
+        const investigation = turnInvestigation(turn, index);
+        if (investigation) items.push(investigation);
         if (!(omitLatestAnswer && index === orderedTurns.length - 1)) {
           items.push(
             <article
@@ -440,17 +558,17 @@ function ConversationTranscript({
         }
         return items;
       })}
-      {feedbackAfterFinalTurn.map((item, index) => (
-        <article
-          className="conversation-turn conversation-feedback"
-          key={`feedback-later-${item.received_at}-${index}`}
-        >
-          <small>FOLLOW-UP REQUEST</small>
-          <p>{item.question}</p>
-          <small>YOUR ANSWER</small>
-          <p className="saved-answer">{item.response}</p>
-        </article>
-      ))}
+      {feedbackAfterFinalTurn.map((item, index) =>
+        feedbackCard(
+          item,
+          `feedback-later-${item.received_at}-${index}`,
+          item.kind === 'follow_up' ||
+            item.response.trim() === pendingQuestion?.trim() ||
+            item.question.trim() === pendingQuestion?.trim()
+            ? 'follow_up'
+            : 'clarification',
+        ),
+      )}
       {!showPendingBeforeFeedback &&
         pendingQuestion &&
         !hasRecordedQuestion && (
@@ -1181,6 +1299,7 @@ function InvestigationView({
         investigation.human_feedback.map((item) => item.question),
       );
       if (
+        investigation.status === 'queued' ||
         investigation.status === 'running' ||
         investigation.status === 'waiting_for_human'
       ) {
@@ -1250,9 +1369,14 @@ function InvestigationView({
       setError('');
       setStatusMessage('');
       setStopping(false);
-      setRunning(investigation.status === 'running');
+      setRunning(
+        investigation.status === 'queued' || investigation.status === 'running',
+      );
       eventCursor.current = 0;
-      if (investigation.status === 'running') {
+      if (
+        investigation.status === 'queued' ||
+        investigation.status === 'running'
+      ) {
         openInvestigationStreamRef.current(investigation.investigation_id);
         reconcileUntilTerminalRef.current(investigation.investigation_id);
       }
@@ -1566,6 +1690,7 @@ function InvestigationView({
       submittedResponse.toLowerCase() === 'please'
         ? followUpQuestion
         : submittedResponse;
+    const priorFinalAnalysis = finalAnalysis;
     try {
       // A saved conversation can have changed state in another browser tab or while its
       // event stream was reconnecting. Never send a follow-up into a pending clarification.
@@ -1592,38 +1717,22 @@ function InvestigationView({
           setClarificationQuestion(latest.pending_human_question);
           setClarificationResponse('');
           setFollowUpResponse('');
+          setPendingConversationQuestion(
+            latest.current_conversation_question ??
+              latest.original_question ??
+              latest.question,
+          );
+          setRunning(false);
           setError('');
           return;
         }
       }
-      const request = await fetch(
-        `${apiUrl}/api/investigations/${investigationId}/follow-up`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ response: submittedResponse }),
-        },
-      );
-      if (!request.ok)
-        throw new Error(`Follow-up request failed with ${request.status}`);
-      const updated = (await request.json()) as {
-        status: string;
-        final_analysis: FinalAnalysis | null;
-      };
-      setConversationFeedback((current) => [
-        ...current,
-        {
-          question: followUpQuestion,
-          response: submittedResponse,
-          hypothesis_id: null,
-          received_at: new Date().toISOString(),
-        },
-      ]);
+      // Make the new question visible immediately. The follow-up endpoint starts
+      // a background graph, so waiting for its first streamed event made the
+      // original tab look idle and could hide a fast clarification request.
+      stream.current?.close();
+      stream.current = null;
       setFollowUpResponse('');
-      if (updated.status === 'completed') {
-        setFinalAnalysis(updated.final_analysis);
-        return;
-      }
       setError('');
       setHypotheses([]);
       setEvidence([]);
@@ -1637,10 +1746,59 @@ function InvestigationView({
       setClarificationResponse('');
       setClarifications([]);
       setRunning(true);
+      const request = await fetch(
+        `${apiUrl}/api/investigations/${investigationId}/follow-up`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ response: submittedResponse }),
+        },
+      );
+      if (!request.ok)
+        throw new Error(`Follow-up request failed with ${request.status}`);
+      const updated = (await request.json()) as SavedInvestigation;
+      const awaitingClarification =
+        updated.status === 'waiting_for_human' &&
+        Boolean(updated.pending_human_question);
+      const activeTurn =
+        updated.status === 'queued' ||
+        updated.status === 'running' ||
+        awaitingClarification;
+      setHypotheses(updated.hypotheses);
+      setEvidence(updated.evidence);
+      setConversationTurns(updated.conversation_turns);
+      setConversationFeedback(updated.human_feedback);
+      setClarifications([
+        ...updated.human_feedback.map((item) => ({
+          question: item.question,
+          response: item.response,
+          hypothesisId: item.hypothesis_id ?? undefined,
+        })),
+        ...(awaitingClarification && updated.pending_human_question
+          ? [{ question: updated.pending_human_question }]
+          : []),
+      ]);
+      setClarificationQuestion(
+        awaitingClarification ? updated.pending_human_question : null,
+      );
+      setPendingConversationQuestion(
+        activeTurn
+          ? (updated.current_conversation_question ?? requestedDetail)
+          : null,
+      );
+      setFinalAnalysis(updated.final_analysis);
+      setRunning(updated.status === 'queued' || updated.status === 'running');
+      if (!activeTurn) {
+        terminalEpoch.current = investigationEpoch.current;
+        return;
+      }
       openInvestigationStream(investigationId);
       reconcileUntilTerminal(investigationId);
     } catch (cause) {
       console.error('Could not request more detail', cause);
+      setFinalAnalysis(priorFinalAnalysis);
+      setPendingConversationQuestion(null);
+      setRunning(false);
       setError(
         'More detail could not be requested. Check the backend logs and try again.',
       );
@@ -1744,6 +1902,10 @@ function InvestigationView({
     );
   const isResumedConversation =
     resumedInvestigation?.investigation_id === investigationId;
+  const isLoadingResumedConversation = Boolean(
+    resumedInvestigation &&
+      resumedInvestigation.investigation_id !== investigationId,
+  );
   // While a clarification is pending there is no completed conversation turn yet. The editor
   // still holds the submitted question, so use it as a safe display fallback during event and
   // polling reconciliation.
@@ -1751,18 +1913,35 @@ function InvestigationView({
     pendingConversationQuestion ??
     (clarificationQuestion ? question.trim() || null : null);
   const premiseEvidence = evidence.filter((item) => item.scope === 'premise');
+  const latestCompletedTurn = conversationTurns.at(-1);
+  const latestTurnOwnsInvestigation = Boolean(
+    latestCompletedTurn &&
+      ((latestCompletedTurn.hypotheses?.length ?? 0) > 0 ||
+        (latestCompletedTurn.evidence?.length ?? 0) > 0),
+  );
+  // A completed turn renders its own snapshot above. The global tree is only
+  // for work currently in progress (or legacy records that predate snapshots).
+  const showActiveInvestigation =
+    running ||
+    (!latestTurnOwnsInvestigation &&
+      (hypotheses.length > 0 || premiseEvidence.length > 0));
+  const needsRecoveryQuestion = Boolean(
+    investigationId &&
+      !finalAnalysis &&
+      (error || resumedInvestigation?.status === 'failed'),
+  );
   return (
     <div className="investigation-layout">
       <section className="work-column">
         <div className="page-heading">
           <div>
             <span className="section-kicker">
-              {isResumedConversation
+              {resumedInvestigation
                 ? 'RESUMED CONVERSATION'
                 : 'ROOT-CAUSE WORKBENCH'}
             </span>
             <h1>
-              {isResumedConversation
+              {resumedInvestigation
                 ? 'Continue from the evidence.'
                 : 'Ask why. Follow the evidence.'}
             </h1>
@@ -1780,6 +1959,18 @@ function InvestigationView({
           </Badge>
         </div>
 
+        {isLoadingResumedConversation && (
+          <div className="thinking-row" aria-live="polite">
+            <span className="thinking-icon">
+              <RefreshCw className="spin" />
+            </span>
+            <div>
+              <strong>Loading conversation…</strong>
+              <span>Restoring its previous questions and evidence.</span>
+            </div>
+          </div>
+        )}
+
         <ConversationTranscript
           turns={conversationTurns}
           feedback={conversationFeedback}
@@ -1795,7 +1986,9 @@ function InvestigationView({
               .map(renderClarification)}
           </section>
         )}
-        {premiseValidation && premiseEvidence.length === 0 && (
+        {showActiveInvestigation &&
+          premiseValidation &&
+          premiseEvidence.length === 0 && (
           <section
             className="premise-validation premise-validation-pending"
             aria-live="polite"
@@ -1812,7 +2005,7 @@ function InvestigationView({
             </div>
           </section>
         )}
-        {premiseEvidence.length > 0 && (
+        {showActiveInvestigation && premiseEvidence.length > 0 && (
           <section
             className="premise-validation"
             aria-label="Baseline validation"
@@ -1834,25 +2027,27 @@ function InvestigationView({
           </section>
         )}
 
-        <div className="timeline-heading">
-          <div>
-            <h2>Hypothesis investigation tree</h2>
-            <span>
-              {running
-                ? 'The graph is evaluating live evidence'
-                : finalAnalysis
-                  ? 'Investigation complete'
-                  : 'Ready'}
-            </span>
-          </div>
-          {running && (
-            <span className="live-pill">
-              <span /> Live
-            </span>
-          )}
-        </div>
+        {showActiveInvestigation && (hypotheses.length > 0 || running) && (
+          <>
+            <div className="timeline-heading">
+              <div>
+                <h2>Hypothesis investigation tree</h2>
+                <span>
+                  {running
+                    ? 'The graph is evaluating live evidence'
+                    : finalAnalysis
+                      ? 'Investigation complete'
+                      : 'Ready'}
+                </span>
+              </div>
+              {running && (
+                <span className="live-pill">
+                  <span /> Live
+                </span>
+              )}
+            </div>
 
-        <div className="hypothesis-tree-list" aria-live="polite">
+            <div className="hypothesis-tree-list" aria-live="polite">
           {hypotheses.map((hypothesis, hypothesisIndex) => {
             const relatedEvidence = evidence.filter((item) => {
               const owners = Array.isArray(item.hypothesis_ids)
@@ -1903,6 +2098,7 @@ function InvestigationView({
                 </summary>
                 <div className="tree-children">
                   <p className="hypothesis-description">
+                    <strong>Candidate explanation: </strong>
                     {hypothesis.description}
                   </p>
                   {activeHypothesisId === hypothesis.id && (
@@ -1919,12 +2115,25 @@ function InvestigationView({
                       const isCurrentStep =
                         activeHypothesisId === hypothesis.id &&
                         steps.at(-1)?.id === step?.id;
+                      const stepLabel =
+                        step?.type === 'HypothesisUpdated'
+                          ? hypothesis.status === 'rejected'
+                            ? 'Why this was rejected'
+                            : hypothesis.status === 'supported' ||
+                                hypothesis.status === 'confirmed'
+                              ? 'What supports this explanation'
+                              : 'Hypothesis assessment'
+                          : step
+                            ? (investigationStepLabels[step.type] ??
+                              step.type
+                                .replaceAll(/([A-Z])/g, ' $1')
+                                .trim())
+                            : '';
                       return step ? (
                         <article className="hypothesis-step" key={activity.id}>
                           <span>
                             {isCurrentStep && <RefreshCw className="spin" />}{' '}
-                            {investigationStepLabels[step.type] ??
-                              step.type.replaceAll(/([A-Z])/g, ' $1').trim()}
+                            {stepLabel}
                           </span>
                           <p>{step.message}</p>
                           {step.source && <small>{step.source}</small>}
@@ -1972,11 +2181,6 @@ function InvestigationView({
               </details>
             );
           })}
-          {!running && hypotheses.length === 0 && (
-            <div className="empty-timeline">
-              Start an investigation to build a hypothesis tree.
-            </div>
-          )}
           {running && (
             <div className="thinking-row">
               <span className="thinking-icon">
@@ -1988,7 +2192,9 @@ function InvestigationView({
               </div>
             </div>
           )}
-        </div>
+            </div>
+          </>
+        )}
         {error && (
           <output className="notice investigation-error">{error}</output>
         )}
@@ -2024,47 +2230,82 @@ function InvestigationView({
                 ))}
               </section>
             )}
-            {!clarificationQuestion && (
-              <section className="follow-up-prompt">
-                <p>Would you like to know more?</p>
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void submitFollowUp(followUpResponse);
-                  }}
-                >
-                  <Textarea
-                    value={followUpResponse}
-                    onChange={(event) =>
-                      setFollowUpResponse(event.target.value)
-                    }
-                    placeholder="Ask a follow-up question…"
-                    rows={3}
-                  />
-                  <div>
-                    <Button type="submit" disabled={!followUpResponse.trim()}>
-                      Submit <ArrowRight />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => void submitFollowUp('No thanks')}
-                    >
-                      Stop
-                    </Button>
-                  </div>
-                </form>
-              </section>
-            )}
           </article>
         )}
-        {!investigationId && (
+        {finalAnalysis && !clarificationQuestion && (
+          <section className="follow-up-prompt" aria-label="Ask a follow-up question">
+            <span className="section-kicker">NEXT QUESTION</span>
+            <p>Would you like to know more?</p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitFollowUp(followUpResponse);
+              }}
+            >
+              <Textarea
+                value={followUpResponse}
+                onChange={(event) => setFollowUpResponse(event.target.value)}
+                placeholder="Ask a follow-up question…"
+                disabled={running}
+                rows={3}
+              />
+              <div>
+                <Button
+                  type="submit"
+                  disabled={running || !followUpResponse.trim()}
+                >
+                  Submit <ArrowRight />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void submitFollowUp('No thanks')}
+                >
+                  Stop
+                </Button>
+              </div>
+            </form>
+          </section>
+        )}
+        {needsRecoveryQuestion && !clarificationQuestion && (
+          <section className="follow-up-prompt" aria-label="Continue failed conversation">
+            <span className="section-kicker">CONTINUE CONVERSATION</span>
+            <p>
+              The previous request did not finish. Ask it again or ask a different
+              question; the earlier conversation context is retained.
+            </p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitFollowUp(followUpResponse);
+              }}
+            >
+              <Textarea
+                value={followUpResponse}
+                onChange={(event) => setFollowUpResponse(event.target.value)}
+                placeholder="Ask what you would like to know next…"
+                disabled={running}
+                rows={3}
+              />
+              <div>
+                <Button
+                  type="submit"
+                  disabled={running || !followUpResponse.trim()}
+                >
+                  Continue <ArrowRight />
+                </Button>
+              </div>
+            </form>
+          </section>
+        )}
+        {!investigationId && !resumedInvestigation && (
           <div className="question-card">
             <label htmlFor="question">Business question</label>
             <Textarea
               id="question"
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
+              disabled={running}
               rows={3}
             />
             <div className="question-footer">
@@ -2075,6 +2316,7 @@ function InvestigationView({
                       type="checkbox"
                       checked={selectedDatasourceIds.includes(source.id)}
                       onChange={() => toggleDatasource(source.id)}
+                      disabled={running}
                     />
                     <Database /> {source.name}
                   </label>
@@ -3345,97 +3587,49 @@ function SavedInvestigationsView({
       investigation.status,
     );
   const canResume = selected ? isResumable(selected) : false;
-  const conversationTimeline = selected
+  const savedConversationTurns = selected
     ? (() => {
-        const timeline: Array<
-          | { kind: 'question'; index: number; turn: ConversationTurn }
-          | { kind: 'answer'; index: number; turn: ConversationTurn }
-          | {
-              kind: 'feedback';
-              index: number;
-              feedback: SavedInvestigation['human_feedback'][number];
-            }
-          | { kind: 'current_question'; question: string }
-          | { kind: 'pending'; question: string }
-        > = [];
-        const feedback = [...selected.human_feedback]
-          .map((item, index) => ({
-            item,
-            index,
-            at: new Date(item.received_at).getTime(),
-          }))
-          .sort((left, right) => left.at - right.at);
-        let feedbackIndex = 0;
-        [...selected.conversation_turns]
-          .sort(
-            (left, right) =>
-              new Date(left.created_at).getTime() -
-              new Date(right.created_at).getTime(),
-          )
-          .forEach((turn, index) => {
-            timeline.push({ kind: 'question', index, turn });
-            const answerTime = new Date(turn.created_at).getTime();
-            while (
-              feedbackIndex < feedback.length &&
-              feedback[feedbackIndex].at <= answerTime
-            ) {
-              const item = feedback[feedbackIndex];
-              timeline.push({
-                kind: 'feedback',
-                index: item.index,
-                feedback: item.item,
-              });
-              feedbackIndex += 1;
-            }
-            timeline.push({ kind: 'answer', index, turn });
+        const turns = [...selected.conversation_turns];
+        if (turns.length === 0 && selected.final_analysis) {
+          turns.push({
+            question:
+              selected.current_conversation_question ??
+              selected.original_question ??
+              selected.question,
+            answer: selected.final_analysis,
+            created_at: selected.started_at,
           });
-        while (feedbackIndex < feedback.length) {
-          const item = feedback[feedbackIndex];
-          timeline.push({
-            kind: 'feedback',
-            index: item.index,
-            feedback: item.item,
-          });
-          feedbackIndex += 1;
         }
-        const currentQuestion =
-          selected.current_conversation_question ??
-          selected.original_question ??
-          selected.question;
-        const currentQuestionAlreadyRecorded = selected.conversation_turns.some(
-          (turn) => turn.question.trim() === currentQuestion.trim(),
-        );
+        // Older archives kept the current tree at the conversation level.
+        // Place it with its latest answer so the saved view has the same
+        // chronology as the live workbench.
         if (
-          selected.status === 'waiting_for_human' &&
-          !currentQuestionAlreadyRecorded
+          selected.final_analysis &&
+          turns.length > 0 &&
+          (selected.hypotheses.length > 0 || selected.evidence.length > 0)
         ) {
-          timeline.push({
-            kind: 'current_question',
-            question: currentQuestion,
-          });
+          const latestIndex = turns.length - 1;
+          if (
+            (turns[latestIndex].hypotheses?.length ?? 0) === 0 &&
+            (turns[latestIndex].evidence?.length ?? 0) === 0
+          ) {
+            turns[latestIndex] = {
+              ...turns[latestIndex],
+              hypotheses: selected.hypotheses,
+              evidence: selected.evidence,
+            };
+          }
         }
-        if (selected.pending_human_question)
-          timeline.push({
-            kind: 'pending',
-            question: selected.pending_human_question,
-          });
-        return timeline;
+        return turns;
       })()
     : [];
-  const evidenceIndexById = new Map<string, number>();
-  const evidenceByHypothesisId = new Map<string, Evidence[]>();
-  selected?.evidence.forEach((item, index) => {
-    evidenceIndexById.set(item.id, index);
-    const owners = Array.isArray(item.hypothesis_ids)
-      ? item.hypothesis_ids
-      : [];
-    const legacyOwner = owners.length === 1 ? owners[0] : null;
-    const owner = item.hypothesis_id ?? item.claim_id ?? legacyOwner;
-    if (!owner) return;
-    const existing = evidenceByHypothesisId.get(owner);
-    if (existing) existing.push(item);
-    else evidenceByHypothesisId.set(owner, [item]);
-  });
+  const savedPendingQuestion =
+    selected &&
+    ['queued', 'running', 'waiting_for_human'].includes(selected.status)
+      ? (selected.current_conversation_question ??
+        selected.original_question ??
+        selected.question)
+      : null;
 
   if (selected)
     return (
@@ -3470,233 +3664,27 @@ function SavedInvestigationsView({
             </div>
           </div>
           {notice && <output className="notice">{notice}</output>}
-          {selected.status === 'running' && (
-            <div className="thinking-row">
-              <span className="thinking-icon">
-                <RefreshCw className="spin" />
-              </span>
+          <ConversationTranscript
+            turns={savedConversationTurns}
+            feedback={selected.human_feedback}
+            pendingQuestion={savedPendingQuestion}
+            omitLatestAnswer={false}
+            isInvestigating={
+              selected.status === 'queued' || selected.status === 'running'
+            }
+          />
+          {selected.pending_human_question && (
+            <article className="saved-detail-item conversation-feedback conversation-pending">
+              <code>Q{selected.human_feedback.length + 1}</code>
               <div>
-                <strong>Conversation is continuing…</strong>
-                <span>The next answer will appear here automatically.</span>
+                <small>AWAITING YOUR ANSWER</small>
+                <p>{selected.pending_human_question}</p>
+                <Button size="sm" onClick={() => onResume(selected)}>
+                  <Play /> Continue in workbench
+                </Button>
               </div>
-            </div>
+            </article>
           )}
-          {selected.conversation_turns.length > 0 && (
-            <section>
-              <h3>Conversation</h3>
-              {conversationTimeline.map((item) =>
-                item.kind === 'question' ? (
-                  <article
-                    className="conversation-turn conversation-question"
-                    key={`question-${item.turn.created_at}-${item.index}`}
-                  >
-                    <small>QUESTION</small>
-                    <p>{item.turn.question}</p>
-                  </article>
-                ) : item.kind === 'current_question' ? (
-                  <article
-                    className="conversation-turn conversation-question conversation-question-pending"
-                    key="current-question"
-                  >
-                    <small>QUESTION</small>
-                    <p>{item.question}</p>
-                  </article>
-                ) : item.kind === 'answer' ? (
-                  <article
-                    className="conversation-turn conversation-answer"
-                    key={`answer-${item.turn.created_at}-${item.index}`}
-                  >
-                    <small>ANSWER</small>
-                    <h2>
-                      {item.turn.answer.likely_root_cause ?? 'Direct answer'}
-                    </h2>
-                    <ReportText>{item.turn.answer.summary}</ReportText>
-                    <ReportData evidence={item.turn.answer.evidence} />
-                    {item.turn.answer.caveats.map((caveat) => (
-                      <p className="saved-caveat" key={caveat}>
-                        {caveat}
-                      </p>
-                    ))}
-                  </article>
-                ) : item.kind === 'pending' ? (
-                  <article
-                    className="saved-detail-item conversation-feedback conversation-pending"
-                    key="pending-question"
-                  >
-                    <code>Q{selected.human_feedback.length + 1}</code>
-                    <div>
-                      <small>AWAITING YOUR ANSWER</small>
-                      <p>{item.question}</p>
-                      <Button size="sm" onClick={() => onResume(selected)}>
-                        <Play /> Continue in workbench
-                      </Button>
-                    </div>
-                  </article>
-                ) : (
-                  <article
-                    className="saved-detail-item conversation-feedback"
-                    key={`feedback-${item.feedback.received_at}-${item.index}`}
-                  >
-                    <code>Q{item.index + 1}</code>
-                    <div>
-                      <small>FOLLOW-UP REQUEST</small>
-                      <p>{item.feedback.question}</p>
-                      <small>YOUR ANSWER</small>
-                      <p className="saved-answer">{item.feedback.response}</p>
-                    </div>
-                  </article>
-                ),
-              )}
-            </section>
-          )}
-          {selected.conversation_turns.length === 0 && (
-            <>
-              <section>
-                <h3>Conversation</h3>
-                <article className="conversation-turn conversation-question conversation-question-pending">
-                  <small>QUESTION</small>
-                  <p>
-                    {selected.current_conversation_question ??
-                      selected.original_question ??
-                      selected.question}
-                  </p>
-                </article>
-                {selected.pending_human_question && (
-                  <article className="saved-detail-item conversation-feedback conversation-pending">
-                    <code>Q{selected.human_feedback.length + 1}</code>
-                    <div>
-                      <small>AWAITING YOUR ANSWER</small>
-                      <p>{selected.pending_human_question}</p>
-                      <Button size="sm" onClick={() => onResume(selected)}>
-                        <Play /> Continue in workbench
-                      </Button>
-                    </div>
-                  </article>
-                )}
-              </section>
-              {selected.human_feedback.length > 0 && (
-                <section>
-                  <h3>Clarifications</h3>
-                  {selected.human_feedback.map((item, index) => (
-                    <article
-                      className="saved-detail-item"
-                      key={`${item.question}-${index}`}
-                    >
-                      <code>Q{index + 1}</code>
-                      <div>
-                        <p>{item.question}</p>
-                        <small>YOUR ANSWER</small>
-                        <p className="saved-answer">{item.response}</p>
-                      </div>
-                    </article>
-                  ))}
-                </section>
-              )}
-            </>
-          )}
-          {selected.hypotheses.length > 0 && (
-            <section className="saved-hypothesis-tree">
-              <h3>Hypotheses and evidence</h3>
-              <div className="hypothesis-tree-list">
-                {selected.hypotheses.map((hypothesis, hypothesisIndex) => {
-                  const relatedEvidence =
-                    evidenceByHypothesisId.get(hypothesis.id) ?? [];
-                  const tone =
-                    hypothesis.status === 'rejected'
-                      ? 'bad'
-                      : hypothesis.status === 'supported' ||
-                          hypothesis.status === 'confirmed'
-                        ? 'good'
-                        : 'muted';
-                  return (
-                    <details
-                      className="hypothesis-tree"
-                      key={hypothesis.id}
-                      open
-                    >
-                      <summary>
-                        <code>H{hypothesisIndex + 1}</code>
-                        <strong>{hypothesis.name}</strong>
-                        <span className={tone}>{hypothesis.status}</span>
-                        <span className="tree-confidence">
-                          {Math.round(hypothesis.confidence * 100)}%
-                        </span>
-                        <ChevronDown />
-                      </summary>
-                      <div className="tree-children">
-                        <p className="hypothesis-description">
-                          {hypothesis.description}
-                        </p>
-                        {relatedEvidence.map((item) => (
-                          <article
-                            className="hypothesis-evidence"
-                            key={item.id}
-                          >
-                            <code>
-                              E{(evidenceIndexById.get(item.id) ?? 0) + 1}
-                            </code>
-                            <div>
-                              <span>
-                                {item.relationship} evidence ·{' '}
-                                {Math.round(item.confidence * 100)}%
-                              </span>
-                              <p>{item.description}</p>
-                            </div>
-                          </article>
-                        ))}
-                        {relatedEvidence.length === 0 && (
-                          <p className="tree-empty">
-                            No evidence was recorded for this hypothesis.
-                          </p>
-                        )}
-                      </div>
-                    </details>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-          {selected.hypotheses.length === 0 && (
-            <section>
-              <h3>Evidence</h3>
-              {selected.evidence.map((item, index) => (
-                <article className="saved-detail-item" key={item.id}>
-                  <code>E{index + 1}</code>
-                  <div>
-                    <span>
-                      {item.relationship} · {Math.round(item.confidence * 100)}%
-                    </span>
-                    <p>{item.description}</p>
-                  </div>
-                </article>
-              ))}
-              {selected.evidence.length === 0 && (
-                <p className="saved-empty">
-                  No separate evidence was saved for this conversation.
-                </p>
-              )}
-            </section>
-          )}
-          {selected.conversation_turns.length === 0 &&
-            selected.final_analysis && (
-              <section className="saved-conclusion">
-                <h3>{finalAnalysisLabel(selected.final_analysis)}</h3>
-                <h4>
-                  {selected.final_analysis.likely_root_cause ??
-                    'Insufficient evidence'}
-                </h4>
-                <ReportText>{selected.final_analysis.summary}</ReportText>
-                <ReportData evidence={selected.final_analysis.evidence} />
-                <span>
-                  {formatPercent(selected.final_analysis.confidence)} confidence
-                </span>
-                {selected.final_analysis.caveats.map((caveat) => (
-                  <p className="saved-caveat" key={caveat}>
-                    {caveat}
-                  </p>
-                ))}
-              </section>
-            )}
         </article>
       </section>
     );

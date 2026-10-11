@@ -2368,6 +2368,8 @@ class InvestigationEngine(DirectAnswerMixin):
                 ConversationTurn(
                     question=state.current_conversation_question or state.question,
                     answer=analysis,
+                    hypotheses=state.hypotheses,
+                    evidence=state.evidence,
                 ),
             ]
 

@@ -172,10 +172,16 @@ async def test_completed_investigation_can_continue_without_losing_prior_context
     # The engine will classify this new turn from its actual question. A follow-up is
     # not inherently a direct retrieval; it may also be a new "why" investigation.
     assert resumed.request_type == "investigation"
-    assert resumed.hypotheses == state.hypotheses
-    assert resumed.evidence == state.evidence
+    # The prior investigation belongs to its completed turn.  A follow-up
+    # starts with an empty active tree, so its future hypotheses cannot be
+    # rendered beneath the earlier question.
+    assert resumed.hypotheses == []
+    assert resumed.evidence == []
     assert resumed.conversation_turns[0].question == state.question
     assert resumed.conversation_turns[0].answer.summary == state.final_analysis.summary
+    assert resumed.conversation_turns[0].hypotheses == state.hypotheses
+    assert resumed.conversation_turns[0].evidence == state.evidence
+    assert resumed.human_feedback[-1].kind == "follow_up"
     assert "Follow-up request: Break this down by store" in resumed.question
     assert "Previous conclusion: Inventory is the strongest explanation." in resumed.question
     assert "Earlier confirmed preferences:" in resumed.question

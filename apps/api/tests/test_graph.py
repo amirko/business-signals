@@ -3170,6 +3170,8 @@ async def test_negligible_measured_decline_finishes_without_more_clarifications(
     assert result["final_analysis"].likely_root_cause == "No meaningful overall change found"
     assert "1.00% negligibility threshold" in result["final_analysis"].summary
     assert result["conversation_turns"][-1].question == state.question
+    assert result["conversation_turns"][-1].hypotheses == state.hypotheses
+    assert result["conversation_turns"][-1].evidence == state.evidence
 
 
 def test_final_analysis_uses_relative_percentages_and_downgrades_an_incomplete_causal_claim() -> None:

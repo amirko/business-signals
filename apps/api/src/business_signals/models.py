@@ -306,6 +306,7 @@ class ExternalMeasurement(BaseModel):
 class HumanFeedback(BaseModel):
     question: str
     response: str
+    kind: Literal["clarification", "follow_up"] = "clarification"
     hypothesis_id: str | None = None
     received_at: datetime = Field(default_factory=now_utc)
 
@@ -354,8 +355,17 @@ class FinalAnalysis(BaseModel):
 
 
 class ConversationTurn(BaseModel):
+    """A completed question and the investigation that produced its answer.
+
+    Investigation state is reset before a follow-up starts.  Keeping the
+    hypothesis tree with the completed turn preserves the conversation's
+    chronology for both the live workbench and archived conversations.
+    """
+
     question: str
     answer: FinalAnalysis
+    hypotheses: list[Hypothesis] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=now_utc)
 
 

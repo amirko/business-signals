@@ -710,8 +710,8 @@ button {
 .final-result h2 {
   margin: 0;
   color: #123c29;
-  font-size: clamp(24px, 3vw, 32px);
-  line-height: 1.16;
+  font-size: 20px;
+  line-height: 1.4;
   letter-spacing: -0.035em;
 }
 .final-confidence {
@@ -1561,7 +1561,8 @@ button {
 .conversation-turn .saved-caveat {
   margin-top: 9px;
   color: #6a7b72;
-  font-size: 13px;
+  font-size: 18px;
+  line-height: 1.6;
 }
 .source-info > div {
   display: flex;
@@ -2089,6 +2090,18 @@ button {
   display: grid;
   gap: 11px;
   margin: 0 0 24px;
+}
+.turn-investigation {
+  display: grid;
+  gap: 14px;
+  margin: 4px 0 8px;
+}
+.turn-investigation .premise-validation {
+  margin: 0;
+}
+.turn-hypothesis-tree {
+  display: grid;
+  gap: 9px;
 }
 .conversation-transcript .section-kicker {
   margin: 0;
@@ -2764,12 +2777,31 @@ body {
 .connection-meta span,
 .saved-list-uid,
 .opened-conversation-id,
-.opened-conversation-id code {
-  color: #77e7bd;
+.opened-conversation-id code,
+.resumed-conversation-id,
+.resumed-conversation-id code {
+  color: #a9f7da;
 }
 .principles-grid article {
   background: #14233b;
 }
 .principles-grid svg {
   color: #8d7dff;
+}
+
+/* Match the conversation caption to the visible conversation ID caption. */
+.conversation-transcript .section-kicker {
+  color: #77e7bd;
+}
+
+.saved-conclusion .saved-caveat,
+.conversation-turn .saved-caveat {
+  color: #c8d5e7;
+}
+
+/* The nested tree rule is intentionally explicit: evidence must remain
+   readable on the deep-teal card in dark mode. */
+.hypothesis-tree .hypothesis-evidence p,
+.hypothesis-tree .premise-evidence p {
+  color: #e6deff !important;
 }

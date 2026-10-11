@@ -368,11 +368,31 @@ class InvestigationService:
     @staticmethod
     def _prior_conversation_turns(state: InvestigationState) -> list[Any]:
         """Represent a completed investigation as the first turn before adding a continuation."""
-        if state.conversation_turns or state.final_analysis is None:
+        if state.conversation_turns:
+            # Archives created before turns carried their own evidence still
+            # have the last completed turn's tree in the top-level state.
+            # Attach it once, at the boundary before the next turn starts.
+            if state.final_analysis is not None and not state.conversation_turns[-1].hypotheses:
+                latest_turn = state.conversation_turns[-1].model_copy(
+                    update={
+                        "hypotheses": state.hypotheses,
+                        "evidence": state.evidence,
+                    }
+                )
+                return [*state.conversation_turns[:-1], latest_turn]
             return state.conversation_turns
+        if state.final_analysis is None:
+            return []
         from business_signals.models import ConversationTurn
 
-        return [ConversationTurn(question=InvestigationService._original_question(state), answer=state.final_analysis)]
+        return [
+            ConversationTurn(
+                question=InvestigationService._original_question(state),
+                answer=state.final_analysis,
+                hypotheses=state.hypotheses,
+                evidence=state.evidence,
+            )
+        ]
 
     @staticmethod
     def _continuation_context(state: InvestigationState) -> str:
@@ -466,7 +486,11 @@ class InvestigationService:
         if state.status not in resumable_statuses:
             raise ValueError("Only a finished conversation can receive a follow-up")
         follow_up_question = state.final_analysis.follow_up_question if state.final_analysis else None
-        feedback = HumanFeedback(question=follow_up_question or "Would you like more detail?", response=response)
+        feedback = HumanFeedback(
+            question=follow_up_question or "Would you like more detail?",
+            response=response,
+            kind="follow_up",
+        )
         if self._is_negative_follow_up(response):
             final_analysis = state.final_analysis.model_copy(update={"follow_up_question": None}) if state.final_analysis else None
             completed = state.model_copy(
@@ -491,6 +515,7 @@ class InvestigationService:
             "Continue from the previous result. Do not repeat the original investigation; answer only the new request."
         )
         continuation_thread_id = f"{investigation_id}:follow_up:{uuid4().hex}"
+        prior_turns = self._prior_conversation_turns(state)
         replacement = state.model_copy(
             update={
                 "checkpoint_thread_id": continuation_thread_id,
@@ -498,6 +523,18 @@ class InvestigationService:
                 "original_question": self._original_question(state),
                 "current_conversation_question": requested_detail,
                 "metric_definition": None,
+                "analysis_scope": None,
+                "premise_to_validate": None,
+                "premise_status": "not_needed",
+                "scope_coverage": [],
+                "observations": [],
+                "hypotheses": [],
+                "hypothesis_name_index": {},
+                "evidence": [],
+                "investigation_history": [],
+                "failed_checks": [],
+                "external_findings": [],
+                "external_research_checks": [],
                 "current_focus": None,
                 "next_action": None,
                 "external_request": None,
@@ -510,7 +547,7 @@ class InvestigationService:
                 "human_feedback": [*state.human_feedback, feedback],
                 "paused_at": None,
                 "paused_duration_seconds": 0,
-                "conversation_turns": self._prior_conversation_turns(state),
+                "conversation_turns": prior_turns,
                 "started_at": now_utc(),
                 "confidence": None,
                 "status": InvestigationStatus.RUNNING,
